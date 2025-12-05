@@ -151,7 +151,13 @@ function Add-NetworkTopology {
             $script:vSwitches[$switchKey] = $switchShape
             
             # Get port groups for this switch
-            $portGroups = $VMHost | Get-VirtualPortGroup | Where-Object { $_.VirtualSwitchName -eq $vSwitch.Name }
+            try {
+                $portGroups = $VMHost | Get-VirtualPortGroup -ErrorAction Stop | Where-Object { $_.VirtualSwitchName -eq $vSwitch.Name }
+            } catch {
+                Write-Warning "Could not retrieve port groups for switch $($vSwitch.Name): $($_.Exception.Message)"
+                $portGroups = @()
+            }
+            
             $pgX = $switchX - 2
             $pgY = $switchY
             
