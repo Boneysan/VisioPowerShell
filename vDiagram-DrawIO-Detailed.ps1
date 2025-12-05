@@ -6,7 +6,7 @@ if ($VIServer -eq $FALSE) { $VIServer = Read-Host "Please enter a Virtual Center
 # Initialize diagram data structures
 $script:shapes = @()
 $script:connections = @()
-$script:shapeId = 1
+$script:shapeId = 2
 $script:vSwitches = @{}
 $script:portGroups = @{}
 
