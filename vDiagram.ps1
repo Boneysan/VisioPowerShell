@@ -11,10 +11,10 @@ function connect-visioobject ($firstObj, $secondObj)
 	$shpConn = $pagObj.Drop($pagObj.Application.ConnectorToolDataObject, 0, 0)
 
 	#// Connect its Begin to the 'From' shape:
-	$connectBegin = $shpConn.CellsU("BeginX").GlueTo($firstObj.CellsU("PinX"))
+	[void]$shpConn.CellsU("BeginX").GlueTo($firstObj.CellsU("PinX"))
 	
 	#// Connect its End to the 'To' shape:
-	$connectEnd = $shpConn.CellsU("EndX").GlueTo($secondObj.CellsU("PinX"))
+	[void]$shpConn.CellsU("EndX").GlueTo($secondObj.CellsU("PinX"))
 }
 
 function add-visioobject ($mastObj, $item)
@@ -51,7 +51,7 @@ $LXObj = $stnObj.Masters.Item("Linux Server")
 $OtherObj =  $stnObj.Masters.Item("Other Server")
 $CluShp = $stnObj.Masters.Item("Cluster")
 
-If ((Get-Cluster) -ne $Null){
+If ($Null -ne (Get-Cluster)){
 
 	If ($Cluster -eq $FALSE){ 
         $DrawItems = get-cluster 
@@ -81,7 +81,7 @@ If ((Get-Cluster) -ne $Null){
 			ForEach ($VM in (Get-vmhost $VMHost | get-vm))
 			{		
 				$x += 1.50
-				If ($vm.Guest.OSFUllName -eq $Null)
+				If ($Null -eq $vm.Guest.OSFUllName)
 				{
 					$Object2 = add-visioobject $OtherObj $VM
 				}
@@ -124,7 +124,7 @@ Else
 		ForEach ($VM in (Get-vmhost $VMHost | get-vm))
 		{		
 			$x += 1.50
-			If ($vm.Guest.OSFUllName -eq $Null)
+			If ($Null -eq $vm.Guest.OSFUllName)
 			{
 				$Object2 = add-visioobject $OtherObj $VM
 			}

@@ -283,7 +283,7 @@ $VIServer = Connect-VIServer $VIServer
 Write-Host "`nCollecting network topology information..."
 
 # Start drawing
-If ((Get-Cluster) -ne $Null){
+If ($Null -ne (Get-Cluster)){
 
 	If ($Cluster -eq $FALSE){ 
         $DrawItems = Get-Cluster 
@@ -323,7 +323,7 @@ If ((Get-Cluster) -ne $Null){
 				$networkDetails = Get-VMNetworkDetails -VM $VM
 				$vmLabel = $VM.Name
 				
-				If ($vm.Guest.OSFullName -eq $Null) {
+				If ($Null -eq $vm.Guest.OSFullName) {
 					$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
 						-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
 				} Else {
@@ -382,7 +382,7 @@ If ((Get-Cluster) -ne $Null){
 			$networkDetails = Get-VMNetworkDetails -VM $VM
 			$vmLabel = $VM.Name
 			
-			If ($vm.Guest.OSFullName -eq $Null) {
+			If ($Null -eq $vm.Guest.OSFullName) {
 				$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
 					-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
 			} Else {

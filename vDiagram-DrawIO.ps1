@@ -155,7 +155,7 @@ Write-Host "Connecting to $VIServer"
 $VIServer = Connect-VIServer $VIServer
 
 # Start drawing
-If ((Get-Cluster) -ne $Null){
+If ($Null -ne (Get-Cluster)){
 
 	If ($Cluster -eq $FALSE){ 
         $DrawItems = Get-Cluster 
@@ -186,7 +186,7 @@ If ((Get-Cluster) -ne $Null){
 			ForEach ($VM in (Get-VMHost $VMHost | Get-VM))
 			{		
 				$x += 1.50
-				If ($vm.Guest.OSFullName -eq $Null)
+				If ($Null -eq $vm.Guest.OSFullName)
 				{
 					$Object2 = New-DrawIOShape -Label $VM.Name -Style $script:styles['OtherVM'] -X $x -Y $y
 				}
@@ -230,7 +230,7 @@ Else
 		ForEach ($VM in (Get-VMHost $VMHost | Get-VM))
 		{		
 			$x += 1.50
-			If ($vm.Guest.OSFullName -eq $Null)
+			If ($Null -eq $vm.Guest.OSFullName)
 			{
 				$Object2 = New-DrawIOShape -Label $VM.Name -Style $script:styles['OtherVM'] -X $x -Y $y
 			}
