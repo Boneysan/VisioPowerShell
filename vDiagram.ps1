@@ -1,4 +1,36 @@
-﻿Param ($VIServer=$FALSE, $Cluster=$FALSE)
+﻿<#
+.SYNOPSIS
+    Creates a Visio diagram of VMware vSphere infrastructure.
+
+.DESCRIPTION
+    This script generates a Microsoft Visio (.vsd) diagram showing the hierarchy of VMware infrastructure including
+    Virtual Centers, Clusters, ESX Hosts, and Virtual Machines. The diagram uses Cisco shapes for visual representation
+    and automatically arranges objects in a hierarchical layout.
+
+.PARAMETER VIServer
+    The VMware vCenter Server or ESX Host to connect to. If not specified, prompts for input.
+
+.PARAMETER Cluster
+    Optional. Specific cluster to diagram. If not specified, all clusters are included.
+
+.EXAMPLE
+    .\vDiagram.ps1 -VIServer "vcenter.example.com"
+    Creates a Visio diagram of the entire vCenter infrastructure.
+
+.EXAMPLE
+    .\vDiagram.ps1 -VIServer "vcenter.example.com" -Cluster "Production"
+    Creates a Visio diagram of only the Production cluster.
+
+.NOTES
+    Requires:
+    - Microsoft Visio installed on the local machine
+    - VMware PowerCLI module
+    - My-VI-Shapes.vss stencil file in the same directory
+    
+    Output: My_vDrawing.vsd in user's Documents folder
+#>
+
+Param ($VIServer=$FALSE, $Cluster=$FALSE)
 
 $SaveFile = [system.Environment]::GetFolderPath('MyDocuments') + "\My_vDrawing.vsd"
 if ($VIServer -eq $FALSE) { $VIServer = Read-Host "Please enter a Virtual Center name or ESX Host to diagram:" }

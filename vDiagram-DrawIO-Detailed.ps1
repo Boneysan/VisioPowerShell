@@ -1,3 +1,64 @@
+<#
+.SYNOPSIS
+    Creates a detailed Draw.io diagram of VMware vSphere infrastructure with network information.
+
+.DESCRIPTION
+    This script generates a comprehensive Draw.io (.drawio) format diagram showing VMware infrastructure hierarchy
+    including Virtual Centers, Clusters, ESX Hosts, Virtual Machines, Virtual Switches, and Port Groups.
+    
+    Key features:
+    - Hierarchical layout showing infrastructure relationships
+    - Network topology with virtual switches and port groups
+    - Detailed VM information including network adapters, IP addresses, MAC addresses, CPU, RAM, and power state
+    - Color-coded VMs by operating system (Windows/Linux/Other)
+    - Visual connections between VMs and their network port groups
+    - Multiple network adapters per VM are displayed with full details
+
+.PARAMETER VIServer
+    The VMware vCenter Server or ESX Host to connect to. If not specified, prompts for input.
+
+.PARAMETER Cluster
+    Optional. Specific cluster to diagram. If not specified, all clusters are included.
+
+.EXAMPLE
+    .\vDiagram-DrawIO-Detailed.ps1 -VIServer "vcenter.example.com"
+    Creates a detailed Draw.io diagram of the entire vCenter infrastructure with network details.
+
+.EXAMPLE
+    .\vDiagram-DrawIO-Detailed.ps1 -VIServer "vcenter.example.com" -Cluster "Production"
+    Creates a detailed diagram of only the Production cluster.
+
+.EXAMPLE
+    # Using existing vCenter connection
+    Connect-VIServer -Server vcenter.example.com
+    .\vDiagram-DrawIO-Detailed.ps1
+
+.NOTES
+    Requires:
+    - VMware PowerCLI module
+    - VMware Tools installed on VMs for guest information (IP addresses, OS details)
+    
+    Output: My_vDrawing_Detailed.drawio in user's Documents folder
+    
+    VM Details Displayed:
+    - VM Name
+    - Network Adapter Names
+    - IP Addresses (IPv4 only, filters out link-local)
+    - Network/Port Group Names
+    - MAC Addresses
+    - CPU Count
+    - RAM in GB
+    - Power State
+    
+    The output file can be opened with:
+    - Draw.io web application (https://app.diagrams.net)
+    - Draw.io desktop application
+    - Visual Studio Code with Draw.io extension
+    
+    Performance: For large environments (100+ VMs), this script may take several minutes to complete
+    as it collects detailed network adapter information for each VM.
+#>
+
 Param ($VIServer=$FALSE, $Cluster=$FALSE)
 
 $SaveFile = [system.Environment]::GetFolderPath('MyDocuments') + "\My_vDrawing_Detailed.drawio"
@@ -43,10 +104,10 @@ function New-DrawIOShape {
     
     $shape = [PSCustomObject]@{
         Id = $id
-        Label = [System.Security.SecurityElement]::Escape($fullLabel)
+        Label = $fullLabel
         Style = $Style
-        X = $X * 150  # Scale up coordinates
-        Y = $Y * 100
+        X = $X * 250  # Scale up coordinates for better spacing
+        Y = $Y * 180
         Width = $Width
         Height = $Height
     }
@@ -67,7 +128,7 @@ function Connect-DrawIOShape {
         Id = $script:shapeId++
         Source = $Source.Id
         Target = $Target.Id
-        Label = [System.Security.SecurityElement]::Escape($Label)
+        Label = $Label
     }
     
     $script:connections += $connection
@@ -127,12 +188,13 @@ function Add-NetworkTopology {
         [PSCustomObject]$HostShape,
         $VMHost,
         [double]$BaseX,
-        [double]$BaseY
+        [double]$BaseY,
+        [ref]$CurrentMaxY
     )
     
-    # Get virtual switches
+    # Get virtual switches - place them to the left of host
     $vSwitches = $VMHost | Get-VirtualSwitch
-    $switchX = $BaseX - 3
+    $switchX = $BaseX - 4
     $switchY = $BaseY
     
     foreach ($vSwitch in $vSwitches) {
@@ -150,15 +212,45 @@ function Add-NetworkTopology {
             Connect-DrawIOShape -Source $HostShape -Target $switchShape
             $script:vSwitches[$switchKey] = $switchShape
             
-            # Get port groups for this switch
+            # Get port groups for this switch - try multiple methods
+            $portGroups = @()
+            
+            # Method 1: Standard approach
             try {
                 $portGroups = $VMHost | Get-VirtualPortGroup -ErrorAction Stop | Where-Object { $_.VirtualSwitchName -eq $vSwitch.Name }
             } catch {
-                Write-Warning "Could not retrieve port groups for switch $($vSwitch.Name): $($_.Exception.Message)"
-                $portGroups = @()
+                # Method 2: Try getting port groups directly from the switch
+                try {
+                    if ($vSwitch.ExtensionData.Portgroup) {
+                        foreach ($pgRef in $vSwitch.ExtensionData.Portgroup) {
+                            $pg = Get-View -Id $pgRef -ErrorAction Stop
+                            $portGroups += [PSCustomObject]@{
+                                Name = $pg.Name
+                                VLanId = if ($pg.Spec.VlanId) { $pg.Spec.VlanId } else { 0 }
+                                VirtualSwitchName = $vSwitch.Name
+                            }
+                        }
+                    }
+                } catch {
+                    # Method 3: Get from VMHost network info
+                    try {
+                        $networkSystem = Get-View $VMHost.ExtensionData.ConfigManager.NetworkSystem -ErrorAction Stop
+                        foreach ($pg in $networkSystem.NetworkInfo.Portgroup) {
+                            if ($pg.Vswitch -eq $vSwitch.Key) {
+                                $portGroups += [PSCustomObject]@{
+                                    Name = $pg.Spec.Name
+                                    VLanId = $pg.Spec.VlanId
+                                    VirtualSwitchName = $vSwitch.Name
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Warning "Could not retrieve port groups for switch $($vSwitch.Name) using any method"
+                    }
+                }
             }
             
-            $pgX = $switchX - 2
+            $pgX = $switchX - 3
             $pgY = $switchY
             
             foreach ($pg in $portGroups) {
@@ -176,11 +268,16 @@ function Add-NetworkTopology {
                     Connect-DrawIOShape -Source $switchShape -Target $pgShape
                     $script:portGroups[$pgKey] = $pgShape
                     
-                    $pgY += 1.2
+                    $pgY += 1.8
+                    
+                    # Track maximum Y position
+                    if ($pgY -gt $CurrentMaxY.Value) {
+                        $CurrentMaxY.Value = $pgY
+                    }
                 }
             }
             
-            $switchY += 2
+            $switchY += 3
         }
     }
 }
@@ -278,8 +375,24 @@ function Export-DrawIOXML {
         [void]$root.AppendChild($cell)
     }
     
-    # Save XML to file
-    $xml.Save($FilePath)
+    # Save XML to file with explicit stream handling to prevent truncation
+    $settings = New-Object System.Xml.XmlWriterSettings
+    $settings.Encoding = [System.Text.Encoding]::UTF8
+    $settings.Indent = $true
+    $settings.IndentChars = "  "
+    
+    $writer = $null
+    try {
+        $writer = [System.Xml.XmlWriter]::Create($FilePath, $settings)
+        $xml.Save($writer)
+        $writer.Flush()
+    }
+    finally {
+        if ($null -ne $writer) {
+            $writer.Close()
+            $writer.Dispose()
+        }
+    }
 }
 
 # Connect to the VI Server
@@ -319,43 +432,77 @@ If ($Null -ne (Get-Cluster)){
 				-X $x -Y $y -Width 140 -Height 90 -Details $hostDetails
 			Connect-DrawIOShape -Source $CluVisObj -Target $Object1
 			
-			# Add network topology for this host
-			Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y
+			# Track Y position for proper vertical alignment
+			$maxYRef = [ref]$y
 			
-			$vmX = $x + 2
+			# Add network topology for this host (switches and port groups to the left)
+			Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y -CurrentMaxY $maxYRef
+			
+			# Place VMs to the right of host, grouped by network
+			$vmX = $x + 3
 			$vmY = $y
 			
-			ForEach ($VM in (Get-VMHost $VMHost | Get-VM)) {		
-				$networkDetails = Get-VMNetworkDetails -VM $VM
-				$vmLabel = $VM.Name
-				
-				If ($Null -eq $vm.Guest.OSFullName) {
-					$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
-						-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
-				} Else {
-					If ($vm.Guest.OSFullName.Contains("Microsoft") -eq $True) {
-						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['WindowsVM'] `
-							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
-					} else {
-						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['LinuxVM'] `
-							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+			# Group VMs by their primary network for better organization
+			$vmsGrouped = @{}
+			
+			# Get all VMs and group by primary network
+			$allVMs = Get-VMHost $VMHost | Get-VM
+			foreach ($VM in $allVMs) {
+				$primaryAdapter = $VM | Get-NetworkAdapter | Select-Object -First 1
+				if ($primaryAdapter) {
+					$networkName = $primaryAdapter.NetworkName
+					if (-not $vmsGrouped.ContainsKey($networkName)) {
+						$vmsGrouped[$networkName] = @()
 					}
+					$vmsGrouped[$networkName] += $VM
 				}
-				
-				# Get the network adapters and connect to appropriate port groups
-				$networkAdapters = $VM | Get-NetworkAdapter
-				foreach ($adapter in $networkAdapters) {
-					$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
-					if ($script:portGroups.ContainsKey($pgKey)) {
-						$pgShape = $script:portGroups[$pgKey]
-						Connect-DrawIOShape -Source $pgShape -Target $Object2 -Label $adapter.Name
+			}
+			
+			# Draw VMs grouped by network
+			foreach ($networkName in ($vmsGrouped.Keys | Sort-Object)) {
+				foreach ($VM in $vmsGrouped[$networkName]) {
+					$networkDetails = Get-VMNetworkDetails -VM $VM
+					$vmLabel = $VM.Name
+					
+					If ($Null -eq $vm.Guest.OSFullName) {
+						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
+							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+					} Else {
+						If ($vm.Guest.OSFullName.Contains("Microsoft") -eq $True) {
+							$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['WindowsVM'] `
+								-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+						} else {
+							$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['LinuxVM'] `
+								-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+						}
 					}
+					
+					# Connect VMs to their networks
+					$networkAdapters = $VM | Get-NetworkAdapter
+					foreach ($adapter in $networkAdapters) {
+						$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
+						if ($script:portGroups.ContainsKey($pgKey)) {
+							$pgShape = $script:portGroups[$pgKey]
+							Connect-DrawIOShape -Source $pgShape -Target $Object2 -Label $adapter.Name
+						} else {
+							$switchKey = "$($VMHost.Name)-$($adapter.NetworkName)"
+							if ($script:vSwitches.ContainsKey($switchKey)) {
+								$switchShape = $script:vSwitches[$switchKey]
+								Connect-DrawIOShape -Source $switchShape -Target $Object2 -Label "$($adapter.Name)`n$($adapter.NetworkName)"
+							}
+						}
+					}
+					
+					$vmY += 2.0
 				}
-				
-				$vmY += 1.5
 			}
 			$x = 3.00
-			$y += 4
+			# Use the maximum Y position to ensure proper vertical spacing
+			if ($vmY -gt $maxYRef.Value) {
+				$y = $vmY + 2
+			} else {
+				$y = $maxYRef.Value + 2
+			}
 		}
 		$x = 1.50
 	}
@@ -378,43 +525,77 @@ If ($Null -ne (Get-Cluster)){
 			-X $x -Y $y -Width 140 -Height 90 -Details $hostDetails
 		Connect-DrawIOShape -Source $VCObject -Target $Object1
 		
-		# Add network topology for this host
-		Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y
+		# Track Y position for proper vertical alignment
+		$maxYRef = [ref]$y
 		
-		$vmX = $x + 2
+		# Add network topology for this host (switches and port groups to the left)
+		Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y -CurrentMaxY $maxYRef
+		
+		# Place VMs to the right of host, grouped by network
+		$vmX = $x + 3
 		$vmY = $y
 		
-		ForEach ($VM in (Get-VMHost $VMHost | Get-VM)) {		
-			$networkDetails = Get-VMNetworkDetails -VM $VM
-			$vmLabel = $VM.Name
-			
-			If ($Null -eq $vm.Guest.OSFullName) {
-				$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
-					-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
-			} Else {
-				If ($vm.Guest.OSFullName.Contains("Microsoft") -eq $True) {
-					$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['WindowsVM'] `
-						-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
-				} else {
-					$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['LinuxVM'] `
-						-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+		# Group VMs by their primary network for better organization
+		$vmsGrouped = @{}
+		
+		# Get all VMs and group by primary network
+		$allVMs = Get-VMHost $VMHost | Get-VM
+		foreach ($VM in $allVMs) {
+			$primaryAdapter = $VM | Get-NetworkAdapter | Select-Object -First 1
+			if ($primaryAdapter) {
+				$networkName = $primaryAdapter.NetworkName
+				if (-not $vmsGrouped.ContainsKey($networkName)) {
+					$vmsGrouped[$networkName] = @()
 				}
+				$vmsGrouped[$networkName] += $VM
 			}
-			
-			# Get the network adapters and connect to appropriate port groups
-			$networkAdapters = $VM | Get-NetworkAdapter
-			foreach ($adapter in $networkAdapters) {
-				$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
-				if ($script:portGroups.ContainsKey($pgKey)) {
-					$pgShape = $script:portGroups[$pgKey]
-					Connect-DrawIOShape -Source $pgShape -Target $Object2 -Label $adapter.Name
+		}
+		
+		# Draw VMs grouped by network
+		foreach ($networkName in ($vmsGrouped.Keys | Sort-Object)) {
+			foreach ($VM in $vmsGrouped[$networkName]) {
+				$networkDetails = Get-VMNetworkDetails -VM $VM
+				$vmLabel = $VM.Name
+				
+				If ($Null -eq $vm.Guest.OSFullName) {
+					$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
+						-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+				} Else {
+					If ($vm.Guest.OSFullName.Contains("Microsoft") -eq $True) {
+						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['WindowsVM'] `
+							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+					} else {
+						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['LinuxVM'] `
+							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
+					}
 				}
+				
+				# Connect VMs to their networks
+				$networkAdapters = $VM | Get-NetworkAdapter
+				foreach ($adapter in $networkAdapters) {
+					$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
+					if ($script:portGroups.ContainsKey($pgKey)) {
+						$pgShape = $script:portGroups[$pgKey]
+						Connect-DrawIOShape -Source $pgShape -Target $Object2 -Label $adapter.Name
+					} else {
+						$switchKey = "$($VMHost.Name)-$($adapter.NetworkName)"
+						if ($script:vSwitches.ContainsKey($switchKey)) {
+							$switchShape = $script:vSwitches[$switchKey]
+							Connect-DrawIOShape -Source $switchShape -Target $Object2 -Label "$($adapter.Name)`n$($adapter.NetworkName)"
+						}
+					}
+				}
+				
+				$vmY += 2.0
 			}
-			
-			$vmY += 1.5
 		}
 		$x = 1.50
-		$y += 4
+		# Use the maximum Y position to ensure proper vertical spacing
+		if ($vmY -gt $maxYRef.Value) {
+			$y = $vmY + 2
+		} else {
+			$y = $maxYRef.Value + 2
+		}
 	}
 }
 

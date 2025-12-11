@@ -1,3 +1,48 @@
+<#
+.SYNOPSIS
+    Creates a Draw.io diagram of VMware vSphere infrastructure.
+
+.DESCRIPTION
+    This script generates a Draw.io (.drawio) format diagram showing the hierarchy of VMware infrastructure including
+    Virtual Centers, Clusters, ESX Hosts, and Virtual Machines. The diagram uses Cisco shapes from the mxGraph library
+    and creates an XML structure compatible with Draw.io web and desktop applications.
+    
+    The script automatically detects VM operating systems and applies appropriate styling:
+    - Windows VMs: Blue color scheme
+    - Linux VMs: Teal color scheme
+    - Other VMs: Gray color scheme
+
+.PARAMETER VIServer
+    The VMware vCenter Server or ESX Host to connect to. If not specified, prompts for input.
+
+.PARAMETER Cluster
+    Optional. Specific cluster to diagram. If not specified, all clusters are included.
+
+.EXAMPLE
+    .\vDiagram-DrawIO.ps1 -VIServer "vcenter.example.com"
+    Creates a Draw.io diagram of the entire vCenter infrastructure.
+
+.EXAMPLE
+    .\vDiagram-DrawIO.ps1 -VIServer "vcenter.example.com" -Cluster "Production"
+    Creates a Draw.io diagram of only the Production cluster.
+
+.EXAMPLE
+    # Using existing vCenter connection
+    Connect-VIServer -Server vcenter.example.com
+    .\vDiagram-DrawIO.ps1
+
+.NOTES
+    Requires:
+    - VMware PowerCLI module
+    
+    Output: My_vDrawing.drawio in user's Documents folder
+    
+    The output file can be opened with:
+    - Draw.io web application (https://app.diagrams.net)
+    - Draw.io desktop application
+    - Visual Studio Code with Draw.io extension
+#>
+
 Param ($VIServer=$FALSE, $Cluster=$FALSE)
 
 $SaveFile = [system.Environment]::GetFolderPath('MyDocuments') + "\My_vDrawing.drawio"
