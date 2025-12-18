@@ -142,6 +142,9 @@ else {
 
 Write-Host "Looking for folder: $FolderPath..." -ForegroundColor Cyan
 
+# Trim any whitespace from folder path
+$FolderPath = $FolderPath.Trim()
+
 # Find the folder
 $folder = Get-Folder -Name $FolderPath -ErrorAction SilentlyContinue | Where-Object { $_.Type -eq 'VM' }
 
@@ -178,19 +181,7 @@ Write-Host "  Found $($vms.Count) VM(s)" -ForegroundColor White
 $endTime = Get-Date
 $startTime = $endTime.AddHours(-$Hours)
 
-Write-Host "`nCollecting statistics from $($startTime.ToString('yyyy-MM-dd HH:mm')) to $($endTime.ToString('yyyy-MM-dd HH:mm'))..." -ForegroundColor Cyan
-Write-Host "  Interval: $IntervalMinutes minute(s)" -ForegroundColor White
-
-# Define statistics to collect
-$statTypes = @(
-    'cpu.usage.average',           # CPU usage %
-    'mem.usage.average',           # Memory usage %
-    'mem.active.average',          # Active memory KB
-    'disk.read.average',           # Disk read KB/s
-    'disk.write.average',          # Disk write KB/s
-    'net.received.average',        # Network received KB/s
-    'net.transmitted.average'      # Network transmitted KB/s
-)
+Write-Host "`nCollecting utilization events from $($startTime.ToString('yyyy-MM-dd HH:mm')) to $($endTime.ToString('yyyy-MM-dd HH:mm'))..." -ForegroundColor Cyan
 
 $results = @()
 $vmCount = 0
@@ -200,122 +191,103 @@ foreach ($vm in $vms) {
     Write-Host "  Processing [$vmCount/$($vms.Count)]: $($vm.Name)..." -ForegroundColor White
     
     try {
-        # Get statistics for this VM
-        $stats = Get-Stat -Entity $vm -Stat $statTypes -Start $startTime -Finish $endTime -IntervalMins $IntervalMinutes -ErrorAction Stop
+        # Get utilization-related events for this VM
+        $events = Get-VIEvent -Entity $vm -Start $startTime -Finish $endTime -MaxSamples 1000 -ErrorAction Stop | 
+            Where-Object { 
+                $_.FullFormattedMessage -match 'cpu|memory|mem|disk|utilization|usage|resource|performance|contention' -or
+                $_.GetType().Name -match 'Alarm|Resource|Performance|Cpu|Memory|Disk'
+            }
         
-        if ($stats) {
-            # Calculate averages and maximums for each metric
-            $cpuStats = $stats | Where-Object { $_.MetricId -eq 'cpu.usage.average' }
-            $memUsageStats = $stats | Where-Object { $_.MetricId -eq 'mem.usage.average' }
-            $memActiveStats = $stats | Where-Object { $_.MetricId -eq 'mem.active.average' }
-            $diskReadStats = $stats | Where-Object { $_.MetricId -eq 'disk.read.average' }
-            $diskWriteStats = $stats | Where-Object { $_.MetricId -eq 'disk.write.average' }
-            $netRxStats = $stats | Where-Object { $_.MetricId -eq 'net.received.average' }
-            $netTxStats = $stats | Where-Object { $_.MetricId -eq 'net.transmitted.average' }
+        if ($events) {
+            Write-Host "    Found $($events.Count) utilization event(s)" -ForegroundColor Green
             
-            $results += [PSCustomObject]@{
-                VMName = $vm.Name
-                Folder = $folder.Name
-                PowerState = $vm.PowerState
-                NumCPU = $vm.NumCpu
-                MemoryGB = $vm.MemoryGB
-                AvgCPU_Percent = if ($cpuStats) { [math]::Round(($cpuStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxCPU_Percent = if ($cpuStats) { [math]::Round(($cpuStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                MinCPU_Percent = if ($cpuStats) { [math]::Round(($cpuStats | Measure-Object -Property Value -Minimum).Minimum, 2) } else { 0 }
-                AvgMemory_Percent = if ($memUsageStats) { [math]::Round(($memUsageStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxMemory_Percent = if ($memUsageStats) { [math]::Round(($memUsageStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                AvgMemory_MB = if ($memActiveStats) { [math]::Round(($memActiveStats | Measure-Object -Property Value -Average).Average / 1024, 0) } else { 0 }
-                AvgDiskRead_KBps = if ($diskReadStats) { [math]::Round(($diskReadStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxDiskRead_KBps = if ($diskReadStats) { [math]::Round(($diskReadStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                AvgDiskWrite_KBps = if ($diskWriteStats) { [math]::Round(($diskWriteStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxDiskWrite_KBps = if ($diskWriteStats) { [math]::Round(($diskWriteStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                AvgNetworkRx_KBps = if ($netRxStats) { [math]::Round(($netRxStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxNetworkRx_KBps = if ($netRxStats) { [math]::Round(($netRxStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                AvgNetworkTx_KBps = if ($netTxStats) { [math]::Round(($netTxStats | Measure-Object -Property Value -Average).Average, 2) } else { 0 }
-                MaxNetworkTx_KBps = if ($netTxStats) { [math]::Round(($netTxStats | Measure-Object -Property Value -Maximum).Maximum, 2) } else { 0 }
-                DataPoints = $cpuStats.Count
+            foreach ($event in $events) {
+                $results += [PSCustomObject]@{
+                    VMName = $vm.Name
+                    Folder = $folder.Name
+                    PowerState = $vm.PowerState
+                    NumCPU = $vm.NumCpu
+                    MemoryGB = $vm.MemoryGB
+                    EventTime = $event.CreatedTime
+                    EventType = $event.GetType().Name
+                    EventMessage = $event.FullFormattedMessage
+                    UserName = $event.UserName
+                    Severity = if ($event.PSObject.Properties.Name -contains 'Severity') { $event.Severity } else { 'Info' }
+                }
             }
         }
         else {
-            Write-Warning "    No statistics available for $($vm.Name)"
+            Write-Host "    No events listed" -ForegroundColor Yellow
             $results += [PSCustomObject]@{
                 VMName = $vm.Name
                 Folder = $folder.Name
                 PowerState = $vm.PowerState
                 NumCPU = $vm.NumCpu
                 MemoryGB = $vm.MemoryGB
-                AvgCPU_Percent = 0
-                MaxCPU_Percent = 0
-                MinCPU_Percent = 0
-                AvgMemory_Percent = 0
-                MaxMemory_Percent = 0
-                AvgMemory_MB = 0
-                AvgDiskRead_KBps = 0
-                MaxDiskRead_KBps = 0
-                AvgDiskWrite_KBps = 0
-                MaxDiskWrite_KBps = 0
-                AvgNetworkRx_KBps = 0
-                MaxNetworkRx_KBps = 0
-                AvgNetworkTx_KBps = 0
-                MaxNetworkTx_KBps = 0
-                DataPoints = 0
+                EventTime = $null
+                EventType = 'No events listed'
+                EventMessage = 'No utilization events found for this time period'
+                UserName = $null
+                Severity = 'Info'
             }
         }
     }
     catch {
-        Write-Warning "    Error collecting stats for $($vm.Name): $_"
+        Write-Warning "    Error collecting events for $($vm.Name): $_"
+        $results += [PSCustomObject]@{
+            VMName = $vm.Name
+            Folder = $folder.Name
+            PowerState = $vm.PowerState
+            NumCPU = $vm.NumCpu
+            MemoryGB = $vm.MemoryGB
+            EventTime = $null
+            EventType = 'Error'
+            EventMessage = "Error: $_"
+            UserName = $null
+            Severity = 'Error'
+        }
     }
 }
 
-# Sort by average CPU usage descending
-$results = $results | Sort-Object AvgCPU_Percent -Descending
+# Sort by event time descending (most recent first)
+$results = $results | Sort-Object EventTime -Descending
 
 # Output results
-Write-Host "`nUtilization Summary:" -ForegroundColor Green
-Write-Host "===================" -ForegroundColor Green
+Write-Host "`nUtilization Events Summary:" -ForegroundColor Green
+Write-Host "===========================" -ForegroundColor Green
 
 if ($OutputFile) {
     $absolutePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
     $results | Export-Csv -Path $absolutePath -NoTypeInformation -Encoding UTF8
     Write-Host "`nResults exported to: $absolutePath" -ForegroundColor Green
     
-    # Display summary statistics
-    Write-Host "`nTop 10 VMs by CPU Usage:" -ForegroundColor Cyan
-    $results | Select-Object VMName, AvgCPU_Percent, MaxCPU_Percent, AvgMemory_Percent, NumCPU, MemoryGB -First 10 | Format-Table -AutoSize
+    # Display summary
+    Write-Host "`nEvent Summary:" -ForegroundColor Cyan
+    $results | Where-Object { $_.EventType -ne 'No events listed' } | 
+        Select-Object VMName, EventTime, EventType, EventMessage -First 20 | 
+        Format-Table -AutoSize -Wrap
 }
 else {
-    $results | Format-Table -AutoSize
+    $results | Format-Table VMName, EventTime, EventType, EventMessage, Severity -AutoSize -Wrap
 }
 
 # Display aggregate statistics
-Write-Host "`nAggregate Statistics:" -ForegroundColor Cyan
-Write-Host "  Total VMs analyzed: $($results.Count)" -ForegroundColor White
-Write-Host "  Average CPU across all VMs: $([math]::Round(($results | Measure-Object -Property AvgCPU_Percent -Average).Average, 2))%" -ForegroundColor White
-Write-Host "  Average Memory across all VMs: $([math]::Round(($results | Measure-Object -Property AvgMemory_Percent -Average).Average, 2))%" -ForegroundColor White
-Write-Host "  Peak CPU usage: $([math]::Round(($results | Measure-Object -Property MaxCPU_Percent -Maximum).Maximum, 2))% ($($results | Sort-Object MaxCPU_Percent -Descending | Select-Object -First 1 -ExpandProperty VMName))" -ForegroundColor White
-Write-Host "  Peak Memory usage: $([math]::Round(($results | Measure-Object -Property MaxMemory_Percent -Maximum).Maximum, 2))% ($($results | Sort-Object MaxMemory_Percent -Descending | Select-Object -First 1 -ExpandProperty VMName))" -ForegroundColor White
+Write-Host "`nEvent Statistics:" -ForegroundColor Cyan
+$totalEvents = ($results | Where-Object { $_.EventType -ne 'No events listed' }).Count
+$vmsWithEvents = ($results | Where-Object { $_.EventType -ne 'No events listed' } | Select-Object VMName -Unique).Count
+$vmsWithoutEvents = ($results | Where-Object { $_.EventType -eq 'No events listed' } | Select-Object VMName -Unique).Count
 
-# Identify potential issues
-Write-Host "`nPotential Issues:" -ForegroundColor Yellow
-$highCPU = $results | Where-Object { $_.AvgCPU_Percent -gt 80 }
-$highMem = $results | Where-Object { $_.AvgMemory_Percent -gt 90 }
-$noData = $results | Where-Object { $_.DataPoints -eq 0 }
+Write-Host "  Total VMs analyzed: $($vms.Count)" -ForegroundColor White
+Write-Host "  VMs with utilization events: $vmsWithEvents" -ForegroundColor White
+Write-Host "  VMs with no events listed: $vmsWithoutEvents" -ForegroundColor White
+Write-Host "  Total utilization events found: $totalEvents" -ForegroundColor White
 
-if ($highCPU) {
-    Write-Host "  High CPU (>80% avg): $($highCPU.Count) VM(s)" -ForegroundColor Red
-    $highCPU | Select-Object VMName, AvgCPU_Percent, MaxCPU_Percent | Format-Table -AutoSize
-}
-
-if ($highMem) {
-    Write-Host "  High Memory (>90% avg): $($highMem.Count) VM(s)" -ForegroundColor Red
-    $highMem | Select-Object VMName, AvgMemory_Percent, MaxMemory_Percent | Format-Table -AutoSize
-}
-
-if ($noData) {
-    Write-Host "  No statistics available: $($noData.Count) VM(s)" -ForegroundColor Yellow
-    Write-Host "    (These VMs may have been powered off or have insufficient statistics collection)" -ForegroundColor Gray
-}
-
-if (-not $highCPU -and -not $highMem) {
-    Write-Host "  No critical resource issues detected." -ForegroundColor Green
+# Show event type breakdown
+if ($totalEvents -gt 0) {
+    Write-Host "`nEvent Types:" -ForegroundColor Cyan
+    $results | Where-Object { $_.EventType -ne 'No events listed' } | 
+        Group-Object EventType | 
+        Sort-Object Count -Descending | 
+        Select-Object @{N='Event Type';E={$_.Name}}, Count | 
+        Format-Table -AutoSize
 }
