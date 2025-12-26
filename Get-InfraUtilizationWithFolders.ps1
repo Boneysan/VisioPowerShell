@@ -330,6 +330,10 @@ Write-Host "========================================" -ForegroundColor Green
 if ($OutputFile) {
     try {
         $absoluteOutFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputFile)
+        $parentDir = Split-Path -Path $absoluteOutFile -Parent
+        if ($parentDir -and -not (Test-Path -LiteralPath $parentDir)) {
+            New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+        }
         $combinedResults | Export-Csv -Path $absoluteOutFile -NoTypeInformation -Encoding UTF8
         Write-Host "\nResults exported to single CSV: $absoluteOutFile" -ForegroundColor Green
     } catch {
