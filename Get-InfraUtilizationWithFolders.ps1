@@ -198,6 +198,7 @@ foreach ($hv in $hostViews) {
     $hostResults += [PSCustomObject]@{
         HostName      = $hv.Name
         Cluster       = $clusterName
+        NumCpus       = $hw.NumCpuCores
         CpuUsedMhz    = $cpuUsedMhz
         CpuTotalMhz   = $cpuTotalMhz
         CpuUsagePct   = $cpuPct
@@ -285,15 +286,19 @@ foreach ($h in $hostResults) {
         Name            = $h.HostName
         Cluster         = $h.Cluster
         Host            = $h.HostName
+        FolderPath      = $null
+        PowerState      = $null
+        IsTemplate      = $null
+        NumCpus         = $h.NumCpus
+        CurrentCpuPct   = $null
+        MaxCpuPct       = $null
+        AvgCpuPct       = $null
         CpuUsedMhz      = $h.CpuUsedMhz
         CpuTotalMhz     = $h.CpuTotalMhz
         CpuUsagePct     = $h.CpuUsagePct
         MemUsedMB       = $h.MemUsedMB
         MemTotalMB      = $h.MemTotalMB
         MemUsagePct     = $h.MemUsagePct
-        PowerState      = $null
-        IsTemplate      = $null
-        FolderPath      = $null
         InMaintenance   = $h.InMaintenance
         ConnectionState = $h.ConnectionState
     }
@@ -304,6 +309,9 @@ foreach ($v in $vmResults) {
         Name            = $v.VMName
         Cluster         = $v.Cluster
         Host            = $v.Host
+        FolderPath      = $v.FolderPath
+        PowerState      = $v.PowerState
+        IsTemplate      = $v.IsTemplate
         NumCpus         = $v.NumCpus
         CurrentCpuPct   = $v.CurrentCpuPct
         MaxCpuPct       = $v.MaxCpuPct
@@ -314,9 +322,6 @@ foreach ($v in $vmResults) {
         MemUsedMB       = $v.MemUsedMB
         MemTotalMB      = $null
         MemUsagePct     = $null
-        PowerState      = $v.PowerState
-        IsTemplate      = $v.IsTemplate
-        FolderPath      = $v.FolderPath
         InMaintenance   = $null
         ConnectionState = $null
     }
@@ -336,6 +341,10 @@ if ($OutputFile) {
         }
         $combinedResults | Export-Csv -Path $absoluteOutFile -NoTypeInformation -Encoding UTF8
         Write-Host "\nResults exported to single CSV: $absoluteOutFile" -ForegroundColor Green
+        if ($IncludeStats) {
+            Write-Host "  Stats period: Last $Days day(s)" -ForegroundColor Green
+            Write-Host "  Sampling interval: $StatInterval seconds" -ForegroundColor Green
+        }
     } catch {
         Write-Error "Failed to export single CSV file: $_"
     }
@@ -389,4 +398,9 @@ $vmPoweredOn = ($vmResults | Where-Object { $_.PowerState -eq 'poweredOn' }).Cou
 $vmPoweredOff = ($vmResults | Where-Object { $_.PowerState -ne 'poweredOn' }).Count
 Write-Host "  Powered On VMs : $vmPoweredOn" -ForegroundColor White
 Write-Host "  Powered Off VMs: $vmPoweredOff" -ForegroundColor White
+if ($IncludeStats) {
+    Write-Host "\n  Historical Stats Configuration:" -ForegroundColor Cyan
+    Write-Host "    Lookback Period: $Days day(s)" -ForegroundColor White
+    Write-Host "    Sampling Interval: $StatInterval seconds ($([math]::Round($StatInterval/60, 1)) minutes)" -ForegroundColor White
+}
 Write-Host "========================================" -ForegroundColor Green
