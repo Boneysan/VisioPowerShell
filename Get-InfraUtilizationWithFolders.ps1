@@ -250,12 +250,27 @@ foreach ($vm in $vmViews) {
         $vmObj = Get-VM -Id $vm.MoRef -ErrorAction SilentlyContinue
         if ($vmObj) {
             $statsResult = Get-VMCpuStats -VmObject $vmObj -Days $Days -StatInterval $StatInterval
-            $maxCpuPct = $statsResult.MaxCpuPct
-            $avgCpuPct = $statsResult.AvgCpuPct
+            # Normalize to per-CPU percentage (0-100% range)
+            if ($null -ne $statsResult.MaxCpuPct -and $numCpus -gt 0) {
+                $maxCpuPct = [math]::Round($statsResult.MaxCpuPct / $numCpus, 1)
+            }
+            if ($null -ne $statsResult.AvgCpuPct -and $numCpus -gt 0) {
+                $avgCpuPct = [math]::Round($statsResult.AvgCpuPct / $numCpus, 1)
+            }
             
-            # Calculate current CPU as percentage of available
-            if ($numCpus -gt 0) {
-                $currentCpuPct = [math]::Round(($qs.OverallCpuUsage / ($numCpus * 1000)) * 100, 1)
+            # Calculate current CPU as percentage per vCPU (0-100% range)
+            # QuickStats OverallCpuUsage is total across all vCPUs
+            if ($numCpus -gt 0 -and $null -ne $qs.OverallCpuUsage) {
+                # Get host CPU speed to calculate percentage
+                try {
+                    $hostCpuMhz = $hostView.Summary.Hardware.CpuMhz
+                    if ($hostCpuMhz -gt 0) {
+                        $currentCpuPct = [math]::Round(($qs.OverallCpuUsage / ($numCpus * $hostCpuMhz)) * 100, 1)
+                    }
+                } catch {
+                    # Fallback: estimate using 2000 MHz per vCPU average
+                    $currentCpuPct = [math]::Round(($qs.OverallCpuUsage / ($numCpus * 2000)) * 100, 1)
+                }
             }
         }
     }
