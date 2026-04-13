@@ -1,7 +1,31 @@
-# vDiagram-NetworkTopology.ps1
-# Advanced Network Topology Visualization for VMware Infrastructure
-# Generates hierarchical network maps with VLAN zones, subnet grouping, and security boundaries
+<#
+.SYNOPSIS
+    Advanced Network Topology Visualization for VMware Infrastructure.
 
+.DESCRIPTION
+    Generates hierarchical network maps with VLAN zones, subnet grouping, and security boundaries.
+    The script exports a .drawio file that can be opened in Diagrams.net (Draw.io).
+    It identifies network relationships, gateway associations, and security groupings
+    across the vSphere environment.
+
+.PARAMETER vCenter
+    The vCenter Server to connect to.
+
+.PARAMETER OutputFile
+    The path to the output .drawio file.
+
+.PARAMETER GroupBy
+    How to group the network entities: VLAN, Subnet, SecurityZone, or Layer2Domain.
+
+.PARAMETER IncludeSwimLanes
+    Switch to include swimlanes in the diagram.
+
+.PARAMETER ShowIsolatedNetworks
+    Switch to include isolated networks (no VMs/Gateways) in the diagram.
+
+.PARAMETER IdentifyGateways
+    Switch to attempt to identify network gateways based on common patterns.
+#>
 param(
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
@@ -31,6 +55,7 @@ if (-not (Get-Module -Name VMware.PowerCLI -ListAvailable)) {
 
 #region Helper Functions
 
+# Logic: Calculates the network subnet address from an IP and CIDR prefix
 function Get-SubnetFromIP {
     param([string]$IPAddress, [int]$CIDR = 24)
     
@@ -40,7 +65,7 @@ function Get-SubnetFromIP {
         $ip = [System.Net.IPAddress]::Parse($IPAddress)
         $bytes = $ip.GetAddressBytes()
         
-        # Calculate subnet based on CIDR
+        # Calculate subnet mask bytes based on CIDR
         $maskBytes = [byte[]]::new(4)
         $fullBytes = [Math]::Floor($CIDR / 8)
         $remainingBits = $CIDR % 8
@@ -52,7 +77,7 @@ function Get-SubnetFromIP {
             $maskBytes[$fullBytes] = 256 - [Math]::Pow(2, 8 - $remainingBits)
         }
         
-        # Apply mask to get subnet
+        # Apply bitwise AND mask to get the network subnet
         $subnetBytes = @()
         for ($i = 0; $i -lt 4; $i++) {
             $subnetBytes += $bytes[$i] -band $maskBytes[$i]
@@ -65,10 +90,11 @@ function Get-SubnetFromIP {
     }
 }
 
+# Logic: Categorizes networks into security zones based on naming conventions and IP patterns
 function Get-NetworkSecurityZone {
     param([string]$NetworkName, [string]$IPAddress, [int]$VlanId)
     
-    # Classify networks into security zones based on naming and IP patterns
+    # Classify networks into security zones based on regex matching of the network name
     if ($NetworkName -match "DMZ|External|Internet|INTRNET") {
         return "DMZ"
     }
@@ -95,16 +121,18 @@ function Get-NetworkSecurityZone {
     }
 }
 
+# Logic: Extracts detailed network and guest information for a specific VM
 function Get-VMNetworkDetails {
     param($VM, $NetworkAdapters)
     
     $details = @()
+    # Filter adapters for the specific VM
     $vmAdapters = $NetworkAdapters | Where-Object { $_.Parent.Name -eq $VM.Name }
     
     foreach ($adapter in $vmAdapters) {
         $ipAddress = ""
         if ($VM.Guest.IPAddress) {
-            # Filter out IPv6 and link-local addresses
+            # Filter logic: Keep only IPv4 and exclude link-local (169.254) addresses
             $ipv4 = $VM.Guest.IPAddress | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and $_ -notmatch '^169\.254\.' }
             if ($ipv4) {
                 $ipAddress = ($ipv4 | Select-Object -First 1)
@@ -121,7 +149,7 @@ function Get-VMNetworkDetails {
         }
     }
     
-    # Add VM details
+    # Include hardware and runtime details
     $vmInfo = @()
     $vmInfo += "CPU: $($VM.NumCpu)"
     $vmInfo += "RAM: $([math]::Round($VM.MemoryGB, 1))GB"
@@ -133,6 +161,7 @@ function Get-VMNetworkDetails {
     return ($allDetails -join "<br>")
 }
 
+# Logic: Analyzes the raw vSphere data to build a logical topology map
 function Analyze-NetworkTopology {
     param(
         [Parameter(Mandatory=$true)]
@@ -147,13 +176,13 @@ function Analyze-NetworkTopology {
     
     Write-Host "Analyzing network topology..." -ForegroundColor Cyan
     
-    # Build network topology data structure
+    # Initialize the complex topology data structure
     $topology = @{
         Networks = @{}
         VLANs = @{}
         Subnets = @{}
         SecurityZones = @{}
-        GatewayVMs = @()
+        GatewayVMs = @() # VMs connected to multiple networks
         IsolatedNetworks = @()
         Statistics = @{
             TotalVMs = $VMs.Count
@@ -162,7 +191,7 @@ function Analyze-NetworkTopology {
         }
     }
     
-    # Analyze port groups and networks
+    # Phase 1: Map out port groups and their basic properties
     if ($null -ne $PortGroups -and $PortGroups.Count -gt 0) {
         foreach ($pg in $PortGroups) {
         $vlanId = if ($pg.VlanId) { $pg.VlanId } else { 0 }
@@ -187,7 +216,7 @@ function Analyze-NetworkTopology {
             }
         }
         
-        # Group by VLAN
+        # Organize networks into VLAN groups
         if (-not $topology.VLANs.ContainsKey($vlanId)) {
             $topology.VLANs[$vlanId] = @{
                 VLanId = $vlanId
@@ -201,7 +230,7 @@ function Analyze-NetworkTopology {
         }
     }
     
-    # Analyze VMs and their network connections
+    # Phase 2: Iterate through VMs to identify network associations and IP subnets
     foreach ($vm in $VMs) {
         $vmAdapters = $NetworkAdapters | Where-Object { $_.Parent.Name -eq $vm.Name }
         $vmNetworks = @()
@@ -211,7 +240,7 @@ function Analyze-NetworkTopology {
             $networkName = $adapter.NetworkName
             $vmNetworks += $networkName
             
-            # Get IP addresses
+            # Extract valid IPv4 addresses
             $ips = $vm.Guest.IPAddress | Where-Object { 
                 $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' -and 
                 $_ -notmatch '^169\.254\.' 
@@ -220,7 +249,7 @@ function Analyze-NetworkTopology {
             foreach ($ip in $ips) {
                 $vmIPs += $ip
                 
-                # Calculate subnet
+                # Derive logical subnet grouping from IP
                 $subnet = Get-SubnetFromIP -IPAddress $ip -CIDR 24
                 if ($subnet) {
                     if (-not $topology.Subnets.ContainsKey($subnet)) {
@@ -239,7 +268,7 @@ function Analyze-NetworkTopology {
                         $topology.Subnets[$subnet].Networks += $networkName
                     }
                     
-                    # Add subnet to network
+                    # Associate subnet back to the network entry
                     if ($topology.Networks.ContainsKey($networkName)) {
                         if ($topology.Networks[$networkName].Subnets -notcontains $subnet) {
                             $topology.Networks[$networkName].Subnets += $subnet
@@ -248,9 +277,8 @@ function Analyze-NetworkTopology {
                 }
             }
             
-            # Add VM to network (create network entry if from adapters only)
+            # Create a network entry if it was derived from an adapter but not found in port groups
             if (-not $topology.Networks.ContainsKey($networkName)) {
-                # Create network entry from adapter info
                 $topology.Networks[$networkName] = @{
                     Name = $networkName
                     VLanId = 0
@@ -263,7 +291,7 @@ function Analyze-NetworkTopology {
                     Type = "Adapter-Derived"
                 }
                 
-                # Add to VLAN 0 group
+                # Default to VLAN 0 for untracked networks
                 if (-not $topology.VLANs.ContainsKey(0)) {
                     $topology.VLANs[0] = @{
                         VLanId = 0
@@ -276,12 +304,13 @@ function Analyze-NetworkTopology {
                 }
             }
             
+            # Associate VM with the network
             if ($topology.Networks[$networkName].VMs -notcontains $vm.Name) {
                 $topology.Networks[$networkName].VMs += $vm.Name
             }
             $topology.Networks[$networkName].IPAddresses += $vmIPs
             
-            # Add VM to VLAN group
+            # Associate VM with the VLAN group
             $vlanId = $topology.Networks[$networkName].VLanId
             if ($topology.VLANs.ContainsKey($vlanId)) {
                 if ($topology.VLANs[$vlanId].VMs -notcontains $vm.Name) {
@@ -290,7 +319,7 @@ function Analyze-NetworkTopology {
             }
         }
         
-        # Identify gateway VMs (connected to multiple networks)
+        # Identify Gateway VMs: Logic: Any VM connected to more than one distinct network
         if ($vmNetworks.Count -gt 1) {
             $topology.GatewayVMs += @{
                 Name = $vm.Name
@@ -301,14 +330,14 @@ function Analyze-NetworkTopology {
         }
     }
     
-    # Classify networks by security zone
+    # Phase 3: Final classification and isolated network detection
     foreach ($networkName in $topology.Networks.Keys) {
         $network = $topology.Networks[$networkName]
         $sampleIP = $network.IPAddresses | Where-Object { $_ } | Select-Object -First 1
         $zone = Get-NetworkSecurityZone -NetworkName $networkName -IPAddress $sampleIP -VlanId $network.VLanId
         $network.SecurityZone = $zone
         
-        # Group by security zone
+        # Organize into Security Zone groups
         if (-not $topology.SecurityZones.ContainsKey($zone)) {
             $topology.SecurityZones[$zone] = @{
                 Zone = $zone
@@ -321,7 +350,7 @@ function Analyze-NetworkTopology {
             $topology.SecurityZones[$zone].VMs += $network.VMs
         }
         
-        # Check if network is isolated (no VMs or only 1 VM)
+        # Logic: Network is isolated if it has 0 or 1 VM connected
         if ($network.VMs.Count -le 1) {
             $network.IsIsolated = $true
             $topology.IsolatedNetworks += $networkName
@@ -335,6 +364,7 @@ function Analyze-NetworkTopology {
 
 #region Draw.io XML Generation
 
+# Logic: Creates an XML element representing a shape vertex in the Draw.io graph
 function New-DrawIOShape {
     param(
         [int]$Id,
@@ -350,12 +380,13 @@ function New-DrawIOShape {
     $cell = $script:xml.CreateElement("mxCell")
     $cell.SetAttribute("id", $Id)
     $cell.SetAttribute("value", $Value)
-    # Add html=1 to style if not already present
+    # Ensure HTML rendering is enabled in the style for multi-line labels
     $finalStyle = if ($Style -notmatch "html=1") { "$Style;html=1" } else { $Style }
     $cell.SetAttribute("style", $finalStyle)
     $cell.SetAttribute("vertex", "1")
     $cell.SetAttribute("parent", $Parent)
     
+    # Define coordinate and size geometry
     $geometry = $script:xml.CreateElement("mxGeometry")
     $geometry.SetAttribute("x", $X)
     $geometry.SetAttribute("y", $Y)
@@ -367,6 +398,7 @@ function New-DrawIOShape {
     return $cell
 }
 
+# Logic: Creates a swimlane container element to group other shapes
 function New-DrawIOContainer {
     param(
         [int]$Id,
@@ -383,12 +415,14 @@ function New-DrawIOContainer {
     return New-DrawIOShape -Id $Id -Value $Value -Style $style -X $X -Y $Y -Width $Width -Height $Height
 }
 
+# Logic: Creates an XML element representing a connection edge between two shapes
 function Connect-DrawIOShape {
     param([int]$Id, [int]$Source, [int]$Target, [string]$Label = "")
     
     $cell = $script:xml.CreateElement("mxCell")
     $cell.SetAttribute("id", $Id)
     $cell.SetAttribute("value", $Label)
+    # Use orthogonal edge style for clean right-angle connections
     $cell.SetAttribute("style", "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#666666;")
     $cell.SetAttribute("edge", "1")
     $cell.SetAttribute("source", $Source)
@@ -403,6 +437,7 @@ function Connect-DrawIOShape {
     return $cell
 }
 
+# Logic: Main orchestrator for converting the analyzed topology into a multi-page Draw.io XML structure
 function Export-NetworkTopologyDiagram {
     param(
         [Parameter(Mandatory=$true)]
@@ -429,22 +464,19 @@ function Export-NetworkTopologyDiagram {
     
     Write-Host "Generating network topology diagram..." -ForegroundColor Cyan
     
-    # Create XML document
+    # Initialize the base XML structure for Diagrams.net
     $script:xml = New-Object System.Xml.XmlDocument
     $xmlDeclaration = $script:xml.CreateXmlDeclaration("1.0", "utf-8", $null)
     $script:xml.AppendChild($xmlDeclaration) | Out-Null
     
-    # Create mxfile root
     $mxfile = $script:xml.CreateElement("mxfile")
     $script:xml.AppendChild($mxfile) | Out-Null
     
-    # Create diagram
     $diagram = $script:xml.CreateElement("diagram")
     $diagram.SetAttribute("id", "network-topology")
     $diagram.SetAttribute("name", "Network Topology - $GroupBy View")
     $mxfile.AppendChild($diagram) | Out-Null
     
-    # Create mxGraphModel
     $graphModel = $script:xml.CreateElement("mxGraphModel")
     $graphModel.SetAttribute("dx", "0")
     $graphModel.SetAttribute("dy", "0")
@@ -452,11 +484,10 @@ function Export-NetworkTopologyDiagram {
     $graphModel.SetAttribute("gridSize", "10")
     $diagram.AppendChild($graphModel) | Out-Null
     
-    # Create root
     $root = $script:xml.CreateElement("root")
     $graphModel.AppendChild($root) | Out-Null
     
-    # Create base cells
+    # Layer 0 and 1: Background and default content layers
     $cell0 = $script:xml.CreateElement("mxCell")
     $cell0.SetAttribute("id", "0")
     $root.AppendChild($cell0) | Out-Null
@@ -470,19 +501,19 @@ function Export-NetworkTopologyDiagram {
     $x = 50
     $y = 50
     
-    # Zone colors
+    # Define visual theme for different security zones
     $zoneColors = @{
-        "DMZ" = @{Fill = "#FFCDD2"; Stroke = "#C62828"}
-        "Management" = @{Fill = "#E1BEE7"; Stroke = "#6A1B9A"}
+        "DMZ"            = @{Fill = "#FFCDD2"; Stroke = "#C62828"}
+        "Management"     = @{Fill = "#E1BEE7"; Stroke = "#6A1B9A"}
         "Infrastructure" = @{Fill = "#C5CAE9"; Stroke = "#283593"}
-        "Production" = @{Fill = "#C8E6C9"; Stroke = "#2E7D32"}
-        "Development" = @{Fill = "#FFF9C4"; Stroke = "#F57F17"}
-        "Corporate" = @{Fill = "#BBDEFB"; Stroke = "#1565C0"}
-        "Guest" = @{Fill = "#FFE0B2"; Stroke = "#E65100"}
-        "Unclassified" = @{Fill = "#F5F5F5"; Stroke = "#757575"}
+        "Production"     = @{Fill = "#C8E6C9"; Stroke = "#2E7D32"}
+        "Development"    = @{Fill = "#FFF9C4"; Stroke = "#F57F17"}
+        "Corporate"      = @{Fill = "#BBDEFB"; Stroke = "#1565C0"}
+        "Guest"          = @{Fill = "#FFE0B2"; Stroke = "#E65100"}
+        "Unclassified"   = @{Fill = "#F5F5F5"; Stroke = "#757575"}
     }
     
-    # Generate diagram based on grouping method
+    # Phase: Generate diagram layout based on the requested grouping method
     switch ($GroupBy) {
         "VLAN" {
             $sortedVLANs = $Topology.VLANs.Keys | Sort-Object
@@ -495,7 +526,7 @@ function Export-NetworkTopologyDiagram {
                 $networks = $vlan.Networks
                 
                 if ($UseSwimLanes) {
-                    # Create swim lane for VLAN
+                    # Layout: Draw a swimlane container for the VLAN
                     $containerHeight = 300 + ($networks.Count * 480)
                     $container = New-DrawIOContainer -Id $currentId -Value $vlanLabel -X $x -Y $y -Width 1200 -Height $containerHeight
                     $root.AppendChild($container) | Out-Null
@@ -509,14 +540,14 @@ function Export-NetworkTopologyDiagram {
                         $network = $Topology.Networks[$networkName]
                         $vmCount = $network.VMs.Count
                         
-                        # Draw network
+                        # Place network node
                         $netLabel = "$networkName`nVMs: $vmCount`nSubnets: $($network.Subnets -join ', ')"
                         $netCell = New-DrawIOShape -Id $currentId -Value $netLabel -Style "shape=mxgraph.cisco.switches.layer_2_remote_switch;fillColor=#B6D7A8;strokeColor=#6AA84F;" -X $netX -Y $netY -Width 120 -Height 60 -Parent $containerId
                         $root.AppendChild($netCell) | Out-Null
                         $netId = $currentId
                         $currentId++
                         
-                        # Draw VMs
+                        # Place associated VM nodes
                         $vmX = $netX + 200
                         $vmY = $netY
                         foreach ($vmName in $network.VMs) {
@@ -531,7 +562,7 @@ function Export-NetworkTopologyDiagram {
                             $vmCell = New-DrawIOShape -Id $currentId -Value $vmLabel -Style "shape=mxgraph.cisco.servers.virtual_server;fillColor=#76A5AF;strokeColor=#0B5394;" -X $vmX -Y $vmY -Width 200 -Height 420 -Parent $containerId
                             $root.AppendChild($vmCell) | Out-Null
                             
-                            # Connect VM to network
+                            # Connect the VM to the network
                             $edge = Connect-DrawIOShape -Id ($currentId+1) -Source $netId -Target $currentId
                             $root.AppendChild($edge) | Out-Null
                             
@@ -549,7 +580,7 @@ function Export-NetworkTopologyDiagram {
                     $y += $containerHeight + 50
                 }
                 else {
-                    # Flat layout
+                    # Layout: Flat representation without swimlanes
                     foreach ($networkName in $networks) {
                         $network = $Topology.Networks[$networkName]
                         $vmCount = $network.VMs.Count
@@ -602,6 +633,7 @@ function Export-NetworkTopologyDiagram {
                 $networks = $zone.Networks
                 
                 if ($UseSwimLanes) {
+                    # Layout: Create a zone-themed swimlane
                     $containerHeight = 300 + ($networks.Count * 480)
                     $container = New-DrawIOContainer -Id $currentId -Value "$zoneName Zone" -X $x -Y $y -Width 1400 -Height $containerHeight -FillColor $colors.Fill -StrokeColor $colors.Stroke
                     $root.AppendChild($container) | Out-Null
@@ -627,6 +659,8 @@ function Export-NetworkTopologyDiagram {
                         foreach ($vmName in $network.VMs) {
                             $vm = $allVMs | Where-Object { $_.Name -eq $vmName }
                             $gateway = $Topology.GatewayVMs | Where-Object { $_.Name -eq $vmName }
+                            
+                            # Logic: Highlight VMs that act as gateways (multi-homed) with a distinct color
                             $vmStyle = if ($HighlightGateways -and $gateway) {
                                 "shape=mxgraph.cisco.servers.virtual_server;fillColor=#FFD54F;strokeColor=#F57C00;"
                             } else {
@@ -670,12 +704,14 @@ function Export-NetworkTopologyDiagram {
                 $subnetData = $Topology.Subnets[$subnet]
                 if (-not $ShowIsolated -and $subnetData.VMs.Count -eq 0) { continue }
                 
+                # Layout: Position subnet router nodes
                 $subnetLabel = "$subnet`nVMs: $($subnetData.VMs.Count)`nNetworks: $($subnetData.Networks.Count)"
                 $subnetCell = New-DrawIOShape -Id $currentId -Value $subnetLabel -Style "shape=mxgraph.cisco.routers.router;fillColor=#FFE599;strokeColor=#F1C232;" -X $x -Y $y -Width 150 -Height 70
                 $root.AppendChild($subnetCell) | Out-Null
                 $subnetId = $currentId
                 $currentId++
                 
+                # Position VMs relative to their subnet router
                 $vmX = $x + 200
                 $startY = $y
                 foreach ($vmName in $subnetData.VMs) {
@@ -706,7 +742,7 @@ function Export-NetworkTopologyDiagram {
         }
     }
     
-    # Add legend
+    # Final step: Add a legend and export the completed XML to disk
     $legendY = $y + 50
     $legendCell = New-DrawIOShape -Id $currentId -Value "Legend" -Style "text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" -X 50 -Y $legendY -Width 200 -Height 30
     $root.AppendChild($legendCell) | Out-Null
@@ -718,9 +754,7 @@ function Export-NetworkTopologyDiagram {
         $currentId++
     }
     
-    # Save to file
     try {
-        # Resolve to absolute path
         $absolutePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($FilePath)
         
         $settings = New-Object System.Xml.XmlWriterSettings
@@ -739,6 +773,7 @@ function Export-NetworkTopologyDiagram {
         }
         
         Write-Host "Network topology diagram saved to: $absolutePath" -ForegroundColor Green
+        # Display summary statistics in the console
         Write-Host "Statistics:" -ForegroundColor Cyan
         Write-Host "  Total VMs: $($Topology.Statistics.TotalVMs)" -ForegroundColor White
         Write-Host "  Total Networks: $($Topology.Statistics.TotalNetworks)" -ForegroundColor White
@@ -761,7 +796,7 @@ Write-Host "VMware Network Topology Analyzer" -ForegroundColor Green
 Write-Host "=================================" -ForegroundColor Green
 Write-Host ""
 
-# Connect to vCenter if specified
+# Phase 1: Establish Connection
 if ($vCenter) {
     try {
         Write-Host "Connecting to vCenter: $vCenter..." -ForegroundColor Cyan
@@ -781,9 +816,10 @@ else {
     }
 }
 
-# Collect data
+# Phase 2: Collect raw data from the infrastructure
 Write-Host "Collecting VM data..." -ForegroundColor Cyan
 try {
+    # Focus only on powered-on VMs as they provide real-time guest IP information
     $allVMs = Get-VM | Where-Object { $_.PowerState -eq 'PoweredOn' }
     Write-Host "  Found $($allVMs.Count) powered-on VMs" -ForegroundColor White
 }
@@ -796,22 +832,21 @@ Write-Host "Collecting network data..." -ForegroundColor Cyan
 $allPortGroups = @()
 $portGroupHash = @{}
 
-# Get all VMHosts to iterate through
+# Iterate through all hosts to map port groups and switches
 $allVMHosts = Get-VMHost
 
 foreach ($VMHost in $allVMHosts) {
-    # Get virtual switches
     $vSwitches = $VMHost | Get-VirtualSwitch
     
     foreach ($vSwitch in $vSwitches) {
-        # Get port groups for this switch - try multiple methods (from vDiagram-DrawIO-Detailed.ps1)
+        # Fallback Logic: Try multiple methods to retrieve port groups for maximum compatibility with different ESXi versions
         $portGroups = @()
         
-        # Method 1: Standard approach
+        # Method 1: Standard PowerCLI cmdlet
         try {
             $portGroups = $VMHost | Get-VirtualPortGroup -ErrorAction Stop | Where-Object { $_.VirtualSwitchName -eq $vSwitch.Name }
         } catch {
-            # Method 2: Try getting port groups directly from the switch
+            # Method 2: Access vSphere API (ExtensionData) directly
             try {
                 if ($vSwitch.ExtensionData.Portgroup) {
                     foreach ($pgRef in $vSwitch.ExtensionData.Portgroup) {
@@ -824,7 +859,7 @@ foreach ($VMHost in $allVMHosts) {
                     }
                 }
             } catch {
-                # Method 3: Get from VMHost network info
+                # Method 3: Access Network System config via API
                 try {
                     $networkSystem = Get-View $VMHost.ExtensionData.ConfigManager.NetworkSystem -ErrorAction Stop
                     foreach ($pg in $networkSystem.NetworkInfo.Portgroup) {
@@ -842,7 +877,7 @@ foreach ($VMHost in $allVMHosts) {
             }
         }
         
-        # Add to collection (deduplicate by name)
+        # Deduplicate port groups by name across the entire environment
         foreach ($pg in $portGroups) {
             if (-not $portGroupHash.ContainsKey($pg.Name)) {
                 $portGroupHash[$pg.Name] = $pg
@@ -864,21 +899,9 @@ catch {
     exit 1
 }
 
-Write-Host "" 
-Write-Host "Data collection complete:" -ForegroundColor Green
-Write-Host "  VMs: $($allVMs.Count)" -ForegroundColor White
-Write-Host "  Port Groups: $($allPortGroups.Count)" -ForegroundColor White
-Write-Host "  Network Adapters: $($allNetworkAdapters.Count)" -ForegroundColor White
-Write-Host ""
-
-# Analyze topology
-if ($allVMs.Count -eq 0) {
-    Write-Error "No VMs found. Cannot generate topology."
-    exit 1
-}
-
-if ($allNetworkAdapters.Count -eq 0) {
-    Write-Error "No network adapters found. Cannot generate topology."
+# Phase 3: Perform topology analysis and generate the visual diagram
+if ($allVMs.Count -eq 0 -or $allNetworkAdapters.Count -eq 0) {
+    Write-Error "Insufficient data to generate topology."
     exit 1
 }
 
@@ -890,7 +913,7 @@ if ($null -eq $topology) {
     exit 1
 }
 
-# Generate diagram
+# Final Phase: Convert analysis into XML and save to file
 Export-NetworkTopologyDiagram `
     -Topology $topology `
     -FilePath $OutputFile `
@@ -904,4 +927,5 @@ Export-NetworkTopologyDiagram `
 Write-Host ""
 Write-Host "Network topology analysis complete!" -ForegroundColor Green
 
+#endregion
 #endregion

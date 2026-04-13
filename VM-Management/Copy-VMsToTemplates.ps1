@@ -109,7 +109,8 @@ param(
     [string]$OutputFile
 )
 
-# --- Connection ---
+# --- Connection Phase ---
+# Connect to vCenter if specified via parameter, otherwise assume an active session exists
 if ($vCenter) {
     try {
         Write-Host "Connecting to vCenter: $vCenter..." -ForegroundColor Cyan
@@ -123,6 +124,7 @@ if ($vCenter) {
 }
 else {
     Write-Host "Using existing vCenter connection..." -ForegroundColor Yellow
+    # Validate that there is actually an active connection to use
     if (-not (Get-VIServer -ErrorAction SilentlyContinue)) {
         Write-Error "No active vCenter connection. Please connect first or specify -vCenter parameter."
         exit 1
@@ -130,13 +132,14 @@ else {
 }
 
 # --- Resolve source folder ---
+# Find the specific VM folder object based on the provided path string
 $srcFolder = Get-Folder -Name ($SourceFolder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
     Where-Object { $_.Type -eq 'VM' } |
     Where-Object { ($_.ToString()) -match ($SourceFolder -replace '\\', '.*') } |
     Select-Object -First 1
 
+# Fallback: simple name match if the full path match fails
 if (-not $srcFolder) {
-    # Fallback: simple name match
     $srcFolder = Get-Folder -Name ($SourceFolder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
         Where-Object { $_.Type -eq 'VM' } |
         Select-Object -First 1
@@ -148,20 +151,26 @@ if (-not $srcFolder) {
 }
 
 # --- Resolve or create target folder ---
+# Find the target folder where templates will be stored
 $tgtFolder = Get-Folder -Name ($TargetFolder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
     Where-Object { $_.Type -eq 'VM' } |
     Select-Object -First 1
 
+# Logic: Automatically create the target folder if it doesn't exist (unless in DryRun mode)
 if (-not $tgtFolder -and -not $DryRun) {
     Write-Host "Target folder '$TargetFolder' not found. Creating it..." -ForegroundColor Yellow
     try {
+        # Determine the parent folder for the new folder
         $parentFolderName = ($TargetFolder -split '\\' | Select-Object -SkipLast 1 | Select-Object -Last 1)
         $parentFolder = if ($parentFolderName) {
             Get-Folder -Name $parentFolderName -ErrorAction SilentlyContinue | Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
         } else {
+            # Default to the root 'vm' folder
             Get-Folder -Name 'vm' -ErrorAction SilentlyContinue | Select-Object -First 1
         }
         if (-not $parentFolder) { $parentFolder = Get-Folder -Name 'vm' | Select-Object -First 1 }
+        
+        # Perform the folder creation
         $tgtFolder = New-Folder -Name ($TargetFolder -split '\\' | Select-Object -Last 1) -Location $parentFolder -ErrorAction Stop
         Write-Host "  Created folder: $TargetFolder" -ForegroundColor Green
     }
@@ -175,12 +184,14 @@ elseif (-not $tgtFolder -and $DryRun) {
 }
 
 # --- Get VMs in source folder ---
+# Collect all Virtual Machine objects from the source folder
 $vms = Get-VM -Location $srcFolder -ErrorAction SilentlyContinue
 if (-not $vms) {
     Write-Warning "No VMs found in source folder '$SourceFolder'."
     exit 0
 }
 
+# Display configuration summary to the user
 Write-Host "`n=== Copy VMs to Templates ===" -ForegroundColor Cyan
 Write-Host "  Source Folder   : $SourceFolder ($($vms.Count) VMs)" -ForegroundColor White
 Write-Host "  Target Folder   : $TargetFolder" -ForegroundColor White
@@ -189,8 +200,10 @@ Write-Host "  Name Suffix     : $NameSuffix" -ForegroundColor White
 Write-Host "  Template Network: $TemplateNetwork" -ForegroundColor White
 Write-Host "  DryRun          : $DryRun`n" -ForegroundColor White
 
+# Initialize a collection to track the outcome of each VM processing task
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
+# Helper function: Logs the result of a single VM operation and adds it to the master list
 function Add-Result {
     param([string]$VMName, [string]$TemplateName, [string]$SourceDatastore, [string]$TargetDatastore,
           [string]$SourcePowerState, [string]$Status, [string]$Detail)
@@ -205,37 +218,41 @@ function Add-Result {
         Timestamp        = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     }
     $results.Add($entry)
+    # Output to console with status-specific coloring
     $color = switch ($Status) { 'SUCCESS' { 'Green' } 'SKIPPED' { 'Yellow' } 'ERROR' { 'Red' } 'DRYRUN' { 'Cyan' } default { 'White' } }
     Write-Host "  [$Status] $VMName -> $TemplateName : $Detail" -ForegroundColor $color
 }
 
+# --- Main Cloning Loop ---
 foreach ($vm in $vms | Sort-Object Name) {
     $originalPowerState = $vm.PowerState
+    # Construct the target template name using prefix/suffix rules
     $templateName = "$NamePrefix$($vm.Name)$NameSuffix"
-    # DatastoreIdList may have multiple IDs; a pipeline Select-Object -First 1 stops it early
-    # and causes Get-Datastore to throw "pipeline has been stopped". Use a loop instead.
+    
+    # Resolve the source datastore (handling potential multi-ID lists)
     $srcDs = $null
     foreach ($dsId in $vm.DatastoreIdList) {
         $srcDs = Get-Datastore -Id $dsId -ErrorAction SilentlyContinue
         if ($srcDs) { break }
     }
+    # Determine the target datastore for the template
     $targetDs = if ($Datastore) { Get-Datastore -Name $Datastore -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $srcDs }
 
-    # Check if a clone with this name already exists in the target folder
+    # Logic Step: Check for existing naming collisions in the target folder
     $existingClone = Get-VM -Name $templateName -Location $tgtFolder -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($existingClone) {
         if ($ForceReclone) {
+            # Overwrite mode: Delete the old clone before starting the new one
             Write-Host "  [FORCE] Deleting existing clone '$templateName'..." -ForegroundColor Magenta
             try {
-                # Power off first if needed — broken VMs sometimes report as powered on
+                # Force power off if the VM is running or in an invalid state
                 if ($existingClone.PowerState -eq 'PoweredOn') {
                     Stop-VM -VM $existingClone -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
                     Start-Sleep -Seconds 3
                 }
-                # Use API Destroy_Task directly — bypasses PowerCLI validation that
-                # rejects VMs in invalid/orphaned states
+                # Use low-level API call to bypass standard PowerCLI safety checks (handles orphaned VMs)
                 $existingClone.ExtensionData.Destroy_Task() | Out-Null
-                Start-Sleep -Seconds 5  # brief wait for destroy to propagate
+                Start-Sleep -Seconds 5
             }
             catch {
                 Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
@@ -245,6 +262,7 @@ foreach ($vm in $vms | Sort-Object Name) {
             }
         }
         else {
+            # Skip mode: Don't overwrite existing templates unless forced
             Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
                 -TargetDatastore $targetDs.Name -SourcePowerState $vm.PowerState `
                 -Status 'SKIPPED' -Detail "Clone '$templateName' already exists (use -ForceReclone to overwrite)"
@@ -252,6 +270,7 @@ foreach ($vm in $vms | Sort-Object Name) {
         }
     }
 
+    # Handle DryRun early exit
     if ($DryRun) {
         $note = if ($vm.PowerState -eq 'PoweredOn' -and $PowerOffBeforeClone) { "Would power off first, then " } else { "Would " }
         Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
@@ -260,14 +279,17 @@ foreach ($vm in $vms | Sort-Object Name) {
         continue
     }
 
-    # Optionally power off the VM
+    # Optional: Power off the source VM before cloning for disk consistency
     $poweredOffByScript = $false
     if ($vm.PowerState -eq 'PoweredOn' -and $PowerOffBeforeClone) {
         try {
             Write-Host "  Powering off $($vm.Name)..." -ForegroundColor Yellow
+            # Attempt graceful shutdown via VMware Tools
             Stop-VMGuest -VM $vm -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
             $deadline = (Get-Date).AddSeconds(120)
+            # Wait for shutdown to complete
             do { Start-Sleep -Seconds 5; $vm = Get-VM -Id $vm.Id } while ($vm.PowerState -eq 'PoweredOn' -and (Get-Date) -lt $deadline)
+            # Fallback to hard power off if graceful shutdown fails
             if ($vm.PowerState -eq 'PoweredOn') {
                 Stop-VM -VM $vm -Confirm:$false -ErrorAction Stop | Out-Null
                 $vm = Get-VM -Id $vm.Id
@@ -282,7 +304,7 @@ foreach ($vm in $vms | Sort-Object Name) {
         }
     }
 
-    # Build clone spec
+    # Prepare parameters for the New-VM (Clone) operation
     $cloneParams = @{
         VM          = $vm
         Name        = $templateName
@@ -291,12 +313,13 @@ foreach ($vm in $vms | Sort-Object Name) {
         Confirm     = $false
         ErrorAction = 'Stop'
     }
+    
+    # Resolve placement target (Host or Cluster)
     if ($ClusterOrHost) {
         $resourceTarget = Get-Cluster -Name $ClusterOrHost -ErrorAction SilentlyContinue
         if (-not $resourceTarget) { $resourceTarget = Get-VMHost -Name $ClusterOrHost -ErrorAction SilentlyContinue }
         if ($resourceTarget) {
-            # Use a loop to avoid the Select-Object -First 1 pipeline-stop error
-            # when a cluster has multiple resource pools.
+            # Find a valid Resource Pool for the target
             $rp = $null
             foreach ($pool in (Get-ResourcePool -Location $resourceTarget -ErrorAction SilentlyContinue)) {
                 $rp = $pool; break
@@ -305,13 +328,13 @@ foreach ($vm in $vms | Sort-Object Name) {
         }
     }
     else {
-        # No ClusterOrHost specified — place clone on the same host as the source VM
+        # Default: Place the clone on the same host as the source VM
         $cloneParams['VMHost'] = $vm.VMHost
     }
 
     try {
-        # Consolidate disks only when needed — skip for powered-off VMs with no snapshots
-        # to avoid creating a transient task lock that blocks the subsequent New-VM call.
+        # Performance/Stability Phase: Disk Consolidation
+        # Consolidate disks if vSphere flags it as needed or if snapshots exist on a powered-on VM
         try {
             $vmView = $vm | Get-View -Property Runtime, Snapshot -ErrorAction SilentlyContinue
             $needsConsolidate = $vmView -and (
@@ -328,38 +351,35 @@ foreach ($vm in $vms | Sort-Object Name) {
                         Start-Sleep -Seconds 5
                         $taskView.UpdateViewData('Info')
                     }
-                    if ($taskView -and $taskView.Info.State -eq 'error') {
-                        Write-Warning "  Consolidation error on $($vm.Name): $($taskView.Info.Error.LocalizedMessage)"
-                    }
-                    # Brief wait for vCenter to fully release internal locks after consolidation
+                    # Wait for vCenter to release internal file locks
                     Start-Sleep -Seconds 10
                 }
             }
         }
         catch { Write-Warning "  Disk consolidation check failed for $($vm.Name): $_" }
 
+        # Perform the actual clone operation
         $clone = $null
         try {
             $clone = New-VM @cloneParams
         }
         catch {
-            # New-VM sometimes throws when reading back the VM object even though the
-            # underlying vSphere clone task completed successfully. Check if the clone
-            # actually exists before treating this as a failure.
+            # Edge case: New-VM might throw a timeout/disconnect error even if the vSphere task succeeds.
+            # Verify if the VM exists before reporting a failure.
             $clone = Get-VM -Name $templateName -Location $tgtFolder -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $clone) {
                 Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
                     -TargetDatastore $targetDs.Name -SourcePowerState $originalPowerState `
-                    -Status 'ERROR' -Detail "Clone/convert failed: $_"
+                    -Status 'ERROR' -Detail "Clone failed: $_"
                 continue
             }
-            Write-Warning "  New-VM threw but clone '$templateName' exists — treating as success. Error was: $_"
         }
 
-        # Move all NICs to the template network so clones don't inherit live networks
+        # Step: Isolation Phase
+        # Move all Network Adapters on the template to the isolated 'dead-template' network
         if ($TemplateNetwork) {
             try {
-                # Resolve as a distributed portgroup first; fall back to standard network name
+                # Attempt to find a matching Distributed Portgroup
                 $pg = Get-VDPortgroup -Name $TemplateNetwork -ErrorAction SilentlyContinue | Select-Object -First 1
                 foreach ($nic in (Get-NetworkAdapter -VM $clone -ErrorAction SilentlyContinue)) {
                     if ($pg) {
@@ -375,7 +395,7 @@ foreach ($vm in $vms | Sort-Object Name) {
             }
         }
 
-        # Power the original VM back on if this script shut it down
+        # Final Step: Restore original power state if we powered off the source
         if ($poweredOffByScript) {
             try {
                 $vm = Get-VM -Id $vm.Id -ErrorAction SilentlyContinue
@@ -389,6 +409,7 @@ foreach ($vm in $vms | Sort-Object Name) {
             }
         }
 
+        # Log successful completion for this VM
         Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
             -TargetDatastore $targetDs.Name -SourcePowerState $originalPowerState `
             -Status 'SUCCESS' -Detail "Cloned to '$TargetFolder'"
@@ -400,7 +421,8 @@ foreach ($vm in $vms | Sort-Object Name) {
     }
 }
 
-# --- Summary ---
+# --- Summary Phase ---
+# Aggregate results and display a final report
 $success = ($results | Where-Object { $_.Status -eq 'SUCCESS' }).Count
 $skipped = ($results | Where-Object { $_.Status -eq 'SKIPPED' }).Count
 $errors  = ($results | Where-Object { $_.Status -eq 'ERROR'   }).Count
@@ -416,6 +438,7 @@ if ($DryRun) {
     Write-Host "  Errors     : $errors" -ForegroundColor $(if ($errors -gt 0) { 'Red' } else { 'White' })
 }
 
+# Optional: Export result data to CSV for auditing
 if ($OutputFile) {
     $results | Export-Csv -Path $OutputFile -NoTypeInformation
     Write-Host "`nResults exported to: $OutputFile" -ForegroundColor Green

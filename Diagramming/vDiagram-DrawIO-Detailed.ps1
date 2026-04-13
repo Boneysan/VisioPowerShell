@@ -61,28 +61,32 @@
 
 Param ([string]$VIServer, [string]$Cluster)
 
+# Set the output path for the detailed Draw.io file
 $SaveFile = [system.Environment]::GetFolderPath('MyDocuments') + "\My_vDrawing_Detailed.drawio"
+
+# Prompt for vCenter/ESXi host if not provided
 if (-not $VIServer) { $VIServer = Read-Host "Please enter a Virtual Center name or ESX Host to diagram:" }
 
-# Initialize diagram data structures
+# Initialize script-level data structures to store shapes, connections, and network objects
 $script:shapes = @()
 $script:connections = @()
 $script:shapeId = 2
-$script:vSwitches = @{}
-$script:portGroups = @{}
+$script:vSwitches = @{} # Cache for virtual switches to avoid duplicates
+$script:portGroups = @{} # Cache for port groups to avoid duplicates
 
-# Shape style definitions for different object types
+# Define mxGraph styles for different VMware objects, including network infrastructure
 $script:styles = @{
     'VirtualCenter' = 'shape=mxgraph.cisco.servers.virtual_switch_controller;fillColor=#6FA8DC;strokeColor=#0B5394;fontColor=#000000;'
-    'Cluster' = 'shape=mxgraph.cisco.servers.server_cluster;fillColor=#93C47D;strokeColor=#38761D;fontColor=#000000;'
-    'ESXHost' = 'shape=mxgraph.cisco.servers.server;fillColor=#F6B26B;strokeColor=#E69138;fontColor=#000000;'
-    'WindowsVM' = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#6D9EEB;strokeColor=#1155CC;fontColor=#000000;'
-    'LinuxVM' = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#76A5AF;strokeColor=#0B5394;fontColor=#000000;'
-    'OtherVM' = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#CCCCCC;strokeColor=#666666;fontColor=#000000;'
-    'vSwitch' = 'shape=mxgraph.cisco.switches.workgroup_switch;fillColor=#FFE599;strokeColor=#F1C232;fontColor=#000000;'
-    'PortGroup' = 'shape=mxgraph.cisco.switches.layer_2_remote_switch;fillColor=#B6D7A8;strokeColor=#6AA84F;fontColor=#000000;'
+    'Cluster'       = 'shape=mxgraph.cisco.servers.server_cluster;fillColor=#93C47D;strokeColor=#38761D;fontColor=#000000;'
+    'ESXHost'       = 'shape=mxgraph.cisco.servers.server;fillColor=#F6B26B;strokeColor=#E69138;fontColor=#000000;'
+    'WindowsVM'     = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#6D9EEB;strokeColor=#1155CC;fontColor=#000000;'
+    'LinuxVM'       = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#76A5AF;strokeColor=#0B5394;fontColor=#000000;'
+    'OtherVM'       = 'shape=mxgraph.cisco.servers.virtual_server;fillColor=#CCCCCC;strokeColor=#666666;fontColor=#000000;'
+    'vSwitch'       = 'shape=mxgraph.cisco.switches.workgroup_switch;fillColor=#FFE599;strokeColor=#F1C232;fontColor=#000000;'
+    'PortGroup'     = 'shape=mxgraph.cisco.switches.layer_2_remote_switch;fillColor=#B6D7A8;strokeColor=#6AA84F;fontColor=#000000;'
 }
 
+# Helper function to create a new shape entry with optional multi-line details
 function New-DrawIOShape {
     param(
         [string]$Label,
@@ -96,7 +100,7 @@ function New-DrawIOShape {
     
     $id = $script:shapeId++
     
-    # Format label with details
+    # Format label by appending details if provided
     $fullLabel = $Label
     if ($Details -ne "") {
         $fullLabel = "$Label`n$Details"
@@ -106,8 +110,8 @@ function New-DrawIOShape {
         Id = $id
         Label = $fullLabel
         Style = $Style
-        X = $X * 250  # Scale up coordinates for better spacing
-        Y = $Y * 180
+        X = $X * 250  # Increased horizontal scale for complex diagrams
+        Y = $Y * 180  # Increased vertical scale for complex diagrams
         Width = $Width
         Height = $Height
     }
@@ -117,6 +121,7 @@ function New-DrawIOShape {
     return $shape
 }
 
+# Helper function to create a connection between two existing shapes with an optional label
 function Connect-DrawIOShape {
     param(
         [PSCustomObject]$Source,
@@ -134,6 +139,7 @@ function Connect-DrawIOShape {
     $script:connections += $connection
 }
 
+# Collects network adapter information, IP addresses, and port groups for a specific VM
 function Get-VMNetworkDetails {
     param($VM)
     
@@ -143,7 +149,7 @@ function Get-VMNetworkDetails {
     foreach ($adapter in $networkAdapters) {
         $ipAddress = ""
         if ($VM.Guest.IPAddress) {
-            # Filter out IPv6 and link-local addresses
+            # Logic: Filter out IPv6 and link-local (169.254.x.x) addresses to keep the diagram clean
             $ipv4 = $VM.Guest.IPAddress | Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' -and $_ -notmatch '^169\.254\.' }
             if ($ipv4) {
                 $ipAddress = ($ipv4 | Select-Object -First 1)
@@ -163,18 +169,19 @@ function Get-VMNetworkDetails {
     return ($details -join "`n")
 }
 
+# Collects management and vMotion IP addresses for an ESXi host
 function Get-VMHostNetworkDetails {
     param($VMHost)
     
     $details = @()
     
-    # Get management IP
+    # Identify management IP address
     $vmk0 = $VMHost | Get-VMHostNetworkAdapter | Where-Object { $_.ManagementTrafficEnabled -eq $true } | Select-Object -First 1
     if ($vmk0) {
         $details += "Mgmt IP: $($vmk0.IP)"
     }
     
-    # Get vMotion IP if configured
+    # Identify vMotion IP address if configured
     $vmk1 = $VMHost | Get-VMHostNetworkAdapter | Where-Object { $_.VMotionEnabled -eq $true } | Select-Object -First 1
     if ($vmk1) {
         $details += "vMotion: $($vmk1.IP)"
@@ -183,6 +190,7 @@ function Get-VMHostNetworkDetails {
     return ($details -join "`n")
 }
 
+# Complex Logic: Maps the network topology of an ESXi host, including vSwitches and Port Groups
 function Add-NetworkTopology {
     param(
         [PSCustomObject]$HostShape,
@@ -192,7 +200,7 @@ function Add-NetworkTopology {
         [ref]$CurrentMaxY
     )
     
-    # Get virtual switches - place them to the left of host
+    # Retrieve all virtual switches and position them to the left of the host shape
     $vSwitches = $VMHost | Get-VirtualSwitch
     $switchX = $BaseX - 4
     $switchY = $BaseY
@@ -200,26 +208,28 @@ function Add-NetworkTopology {
     foreach ($vSwitch in $vSwitches) {
         $switchKey = "$($VMHost.Name)-$($vSwitch.Name)"
         
+        # Check if this switch has already been diagrammed for this host
         if (-not $script:vSwitches.ContainsKey($switchKey)) {
             $switchDetails = "Type: $($vSwitch.GetType().Name.Replace('VirtualSwitch',''))"
             if ($vSwitch.Mtu) {
                 $switchDetails += "`nMTU: $($vSwitch.Mtu)"
             }
             
+            # Create the vSwitch shape
             $switchShape = New-DrawIOShape -Label $vSwitch.Name -Style $script:styles['vSwitch'] `
                 -X $switchX -Y $switchY -Width 100 -Height 60 -Details $switchDetails
             
             Connect-DrawIOShape -Source $HostShape -Target $switchShape
             $script:vSwitches[$switchKey] = $switchShape
             
-            # Get port groups for this switch - try multiple methods
+            # Attempt to retrieve port groups using three fallback methods for maximum compatibility
             $portGroups = @()
             
-            # Method 1: Standard approach
+            # Method 1: Standard PowerCLI command
             try {
                 $portGroups = $VMHost | Get-VirtualPortGroup -ErrorAction Stop | Where-Object { $_.VirtualSwitchName -eq $vSwitch.Name }
             } catch {
-                # Method 2: Try getting port groups directly from the switch
+                # Method 2: Fallback to ExtensionData (vSphere API) directly from the switch
                 try {
                     if ($vSwitch.ExtensionData.Portgroup) {
                         foreach ($pgRef in $vSwitch.ExtensionData.Portgroup) {
@@ -232,7 +242,7 @@ function Add-NetworkTopology {
                         }
                     }
                 } catch {
-                    # Method 3: Get from VMHost network info
+                    # Method 3: Fallback to VMHost Network System via API
                     try {
                         $networkSystem = Get-View $VMHost.ExtensionData.ConfigManager.NetworkSystem -ErrorAction Stop
                         foreach ($pg in $networkSystem.NetworkInfo.Portgroup) {
@@ -253,6 +263,7 @@ function Add-NetworkTopology {
             $pgX = $switchX - 3
             $pgY = $switchY
             
+            # Iterate through identified port groups and create shapes
             foreach ($pg in $portGroups) {
                 $pgKey = "$($VMHost.Name)-$($pg.Name)"
                 
@@ -270,7 +281,7 @@ function Add-NetworkTopology {
                     
                     $pgY += 1.8
                     
-                    # Track maximum Y position
+                    # Track the furthest vertical position to avoid shape overlapping
                     if ($pgY -gt $CurrentMaxY.Value) {
                         $CurrentMaxY.Value = $pgY
                     }
@@ -282,6 +293,7 @@ function Add-NetworkTopology {
     }
 }
 
+# Function to generate the Draw.io XML file from the collected infrastructure data
 function Export-DrawIOXML {
     param([string]$FilePath)
     
@@ -293,13 +305,13 @@ function Export-DrawIOXML {
     $mxfile = $xml.CreateElement("mxfile")
     [void]$xml.AppendChild($mxfile)
     
-    # Diagram element
+    # Diagram container with detailed title
     $diagram = $xml.CreateElement("diagram")
     $diagram.SetAttribute("id", "vmware-infrastructure")
     $diagram.SetAttribute("name", "VMware Infrastructure - Detailed")
     [void]$mxfile.AppendChild($diagram)
     
-    # mxGraphModel element
+    # Configure the graph model with large canvas dimensions
     $graphModel = $xml.CreateElement("mxGraphModel")
     $graphModel.SetAttribute("dx", "0")
     $graphModel.SetAttribute("dy", "0")
@@ -316,22 +328,21 @@ function Export-DrawIOXML {
     $graphModel.SetAttribute("pageHeight", "1200")
     [void]$diagram.AppendChild($graphModel)
     
-    # root element
+    # Root element for graph cells
     $root = $xml.CreateElement("root")
     [void]$graphModel.AppendChild($root)
     
-    # Layer 0 (required)
+    # Mandatory Draw.io layers
     $cell0 = $xml.CreateElement("mxCell")
     $cell0.SetAttribute("id", "0")
     [void]$root.AppendChild($cell0)
     
-    # Layer 1 (required)
     $cell1 = $xml.CreateElement("mxCell")
     $cell1.SetAttribute("id", "1")
     $cell1.SetAttribute("parent", "0")
     [void]$root.AppendChild($cell1)
     
-    # Add shapes
+    # Convert all script objects into XML shape elements (vertexes)
     foreach ($shape in $script:shapes) {
         $cell = $xml.CreateElement("mxCell")
         $cell.SetAttribute("id", $shape.Id.ToString())
@@ -351,11 +362,12 @@ function Export-DrawIOXML {
         [void]$root.AppendChild($cell)
     }
     
-    # Add connections
+    # Convert all script objects into XML connection elements (edges)
     foreach ($conn in $script:connections) {
         $cell = $xml.CreateElement("mxCell")
         $cell.SetAttribute("id", $conn.Id.ToString())
         
+        # Apply background color to edge labels for readability
         $labelStyle = if ($conn.Label) { "labelBackgroundColor=#ffffff;" } else { "" }
         $cell.SetAttribute("style", "edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#666666;$labelStyle")
         $cell.SetAttribute("edge", "1")
@@ -375,7 +387,7 @@ function Export-DrawIOXML {
         [void]$root.AppendChild($cell)
     }
     
-    # Save XML to file with explicit stream handling to prevent truncation
+    # Save XML to file with explicit stream handling and UTF-8 encoding to prevent data truncation
     $settings = New-Object System.Xml.XmlWriterSettings
     $settings.Encoding = [System.Text.Encoding]::UTF8
     $settings.Indent = $true
@@ -407,9 +419,10 @@ try {
 
 Write-Host "`nCollecting network topology information..."
 
-# Start drawing
+# Phase 1: Diagram Logic for Cluster-based environments
 If ($Null -ne (Get-Cluster)){
 
+    # Determine clusters to include in the diagram
 	if (-not $Cluster) {
         $DrawItems = Get-Cluster
     } else {
@@ -420,38 +433,41 @@ If ($Null -ne (Get-Cluster)){
 	$VCLocation = $DrawItems | Get-VMHost
 	$y = $VCLocation.Length * 1.50 / 2
 	
+    # Add central vCenter shape
 	$VCObject = New-DrawIOShape -Label $VIServer.Name -Style $script:styles['VirtualCenter'] -X $x -Y $y
 	
 	$x = 1.50
 	$y = 1.50
 	
+    # Iterate through Clusters
 	ForEach ($clusterObj in $DrawItems) {
 		$CluVisObj = New-DrawIOShape -Label $clusterObj.Name -Style $script:styles['Cluster'] -X $x -Y $y
 		Connect-DrawIOShape -Source $VCObject -Target $CluVisObj
 
 		$x = 3.00
+        # Iterate through Hosts in each Cluster
 		ForEach ($VMHost in (Get-Cluster $clusterObj | Get-VMHost)) {
 			$hostDetails = Get-VMHostNetworkDetails -VMHost $VMHost
 			$hostDetails += "`nESXi: $($VMHost.Version)"
 			
+            # Create detailed Host shape
 			$Object1 = New-DrawIOShape -Label $VMHost.Name -Style $script:styles['ESXHost'] `
 				-X $x -Y $y -Width 140 -Height 90 -Details $hostDetails
 			Connect-DrawIOShape -Source $CluVisObj -Target $Object1
 			
-			# Track Y position for proper vertical alignment
+			# Reference to track vertical spacing for network objects
 			$maxYRef = [ref]$y
 			
-			# Add network topology for this host (switches and port groups to the left)
+			# Logic Phase: Map network topology (switches/portgroups) to the LEFT of the host
 			Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y -CurrentMaxY $maxYRef
 			
-			# Place VMs to the right of host, grouped by network
+			# Logic Phase: Map VMs to the RIGHT of the host, grouped by network for better organization
 			$vmX = $x + 3
 			$vmY = $y
 			
-			# Group VMs by their primary network for better organization
 			$vmsGrouped = @{}
 			
-			# Get all VMs and group by primary network
+			# Retrieve and group VMs by their primary network adapter
 			$allVMs = Get-VMHost $VMHost | Get-VM
 			foreach ($VM in $allVMs) {
 				$primaryAdapter = $VM | Get-NetworkAdapter | Select-Object -First 1
@@ -464,12 +480,13 @@ If ($Null -ne (Get-Cluster)){
 				}
 			}
 			
-			# Draw VMs grouped by network
+			# Iterate through organized VM groups and create shapes
 			foreach ($networkName in ($vmsGrouped.Keys | Sort-Object)) {
 				foreach ($VM in $vmsGrouped[$networkName]) {
 					$networkDetails = Get-VMNetworkDetails -VM $VM
 					$vmLabel = $VM.Name
 					
+					# Assign shape style based on Guest OS
 					If ($Null -eq $vm.Guest.OSFullName) {
 						$Object2 = New-DrawIOShape -Label $vmLabel -Style $script:styles['OtherVM'] `
 							-X $vmX -Y $vmY -Width 140 -Height 90 -Details $networkDetails
@@ -483,7 +500,7 @@ If ($Null -ne (Get-Cluster)){
 						}
 					}
 					
-					# Connect VMs to their networks
+					# Create logical connections between VM and its assigned network port group
 					$networkAdapters = $VM | Get-NetworkAdapter
 					foreach ($adapter in $networkAdapters) {
 						$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
@@ -503,7 +520,7 @@ If ($Null -ne (Get-Cluster)){
 				}
 			}
 			$x = 3.00
-			# Use the maximum Y position to ensure proper vertical spacing
+			# Adjust vertical starting position for the next host to prevent overlap
 			if ($vmY -gt $maxYRef.Value) {
 				$y = $vmY + 2
 			} else {
@@ -513,16 +530,19 @@ If ($Null -ne (Get-Cluster)){
 		$x = 1.50
 	}
 } Else {
+    # Phase 2: Diagram Logic for standalone ESXi environments (no clusters)
 	$DrawItems = Get-VMHost
 	
 	$x = 0
 	$y = $DrawItems.Length * 1.50 / 2
 	
+    # Add central Host shape
 	$VCObject = New-DrawIOShape -Label $VIServer.Name -Style $script:styles['VirtualCenter'] -X $x -Y $y
 	
 	$x = 1.50
 	$y = 1.50
 	
+    # Iterate through Standalone Hosts
 	ForEach ($VMHost in $DrawItems) {
 		$hostDetails = Get-VMHostNetworkDetails -VMHost $VMHost
 		$hostDetails += "`nESXi: $($VMHost.Version)"
@@ -531,20 +551,19 @@ If ($Null -ne (Get-Cluster)){
 			-X $x -Y $y -Width 140 -Height 90 -Details $hostDetails
 		Connect-DrawIOShape -Source $VCObject -Target $Object1
 		
-		# Track Y position for proper vertical alignment
+		# Reference for vertical spacing
 		$maxYRef = [ref]$y
 		
-		# Add network topology for this host (switches and port groups to the left)
+		# Logic Phase: Map network infrastructure to the LEFT
 		Add-NetworkTopology -HostShape $Object1 -VMHost $VMHost -BaseX $x -BaseY $y -CurrentMaxY $maxYRef
 		
-		# Place VMs to the right of host, grouped by network
+		# Logic Phase: Map VMs to the RIGHT
 		$vmX = $x + 3
 		$vmY = $y
 		
-		# Group VMs by their primary network for better organization
 		$vmsGrouped = @{}
 		
-		# Get all VMs and group by primary network
+		# Group VMs by network
 		$allVMs = Get-VMHost $VMHost | Get-VM
 		foreach ($VM in $allVMs) {
 			$primaryAdapter = $VM | Get-NetworkAdapter | Select-Object -First 1
@@ -557,7 +576,7 @@ If ($Null -ne (Get-Cluster)){
 			}
 		}
 		
-		# Draw VMs grouped by network
+		# Create VM shapes
 		foreach ($networkName in ($vmsGrouped.Keys | Sort-Object)) {
 			foreach ($VM in $vmsGrouped[$networkName]) {
 				$networkDetails = Get-VMNetworkDetails -VM $VM
@@ -576,7 +595,7 @@ If ($Null -ne (Get-Cluster)){
 					}
 				}
 				
-				# Connect VMs to their networks
+				# Connect VMs to network infrastructure
 				$networkAdapters = $VM | Get-NetworkAdapter
 				foreach ($adapter in $networkAdapters) {
 					$pgKey = "$($VMHost.Name)-$($adapter.NetworkName)"
@@ -596,7 +615,7 @@ If ($Null -ne (Get-Cluster)){
 			}
 		}
 		$x = 1.50
-		# Use the maximum Y position to ensure proper vertical spacing
+		# Adjust vertical position for next standalone host
 		if ($vmY -gt $maxYRef.Value) {
 			$y = $vmY + 2
 		} else {
@@ -605,7 +624,7 @@ If ($Null -ne (Get-Cluster)){
 	}
 }
 
-# Export to draw.io XML format
+# Final Phase: Export to XML and provide summary
 Write-Host "`nGenerating detailed draw.io diagram..."
 Export-DrawIOXML -FilePath $SaveFile
 
@@ -619,3 +638,4 @@ Write-Output "  - Network adapter details"
 Write-Output "  - MAC addresses"
 
 Disconnect-VIServer -Server $VIServer -Confirm:$false
+
