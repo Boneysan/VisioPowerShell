@@ -4,7 +4,7 @@
     Sets static IP addresses on the mc-internal NIC (eth_1) for all VDE-* client VMs in IQT-CL-DT2.
 
 .DESCRIPTION
-    Targets only the NIC with an APIPA (169.254.x.x) address — which is always eth_1 (mc-internal)
+    Targets only the NIC with an APIPA (169.254.x.x) address - which is always eth_1 (mc-internal)
     on VDE-STU, VDE-INS, and VDE-ENG VMs when guest customization has failed.
 
     Expected configuration per terraform.tfvars (04_clients):
@@ -23,12 +23,21 @@
 .PARAMETER EventName
     Event name suffix appended to VM names. Defaults to CLDT2.
 
+.PARAMETER NetworkName
+    vSphere network/portgroup name to target (e.g. IQT-CL-DT2). Only VMs with a NIC
+    connected to this network will be processed. Supports wildcards (e.g. IQT-CL-*).
+    If not provided, the script will prompt for it.
+
 .PARAMETER OutputFile
     Optional. Path to export results as CSV.
 
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1
     Prompts for credentials and fixes mc-internal IPs on all VDE-* VMs.
+
+.EXAMPLE
+    .\Set-VDEMcInternalIPs.ps1 -NetworkName "IQT-CL-DT2" -OutputFile "mc-internal-fix.csv"
+    Only processes VMs that have a NIC connected to the IQT-CL-DT2 portgroup.
 
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1 -vCenter "c1r1r12-vcsa-01.texnet1.net" -OutputFile "mc-internal-fix.csv"
@@ -42,12 +51,28 @@
 #>
 
 param(
-    [string]$vCenter   = "c1r1r12-vcsa-01.texnet1.net",
-    [string]$EventName = "CLDT2",
+    [string]$vCenter     = "c1r1r12-vcsa-01.texnet1.net",
+    [string]$EventName   = "CLDT2",
+    [string]$NetworkName,
     [string]$OutputFile
 )
 
-# ── VM name -> last octet for 10.20.0.x ──
+if (-not $NetworkName) {
+    $NetworkName = Read-Host "Enter the vSphere network/portgroup name to target (e.g. IQT-CDO2-CL7)"
+    if (-not $NetworkName) {
+        Write-Error "NetworkName is required."
+        exit 1
+    }
+}
+
+# EventName drives the VM name suffix (e.g. VDE-STU01-1-<EventName>).
+# Default to NetworkName so that -NetworkName "IQT-CDO2-CL7" automatically
+# targets VMs named VDE-STU01-1-IQT-CDO2-CL7 without needing -EventName.
+if (-not $PSBoundParameters.ContainsKey('EventName')) {
+    $EventName = $NetworkName
+}
+
+# -- VM name -> last octet for 10.20.0.x --
 # Range starts at .100 to avoid Manticore infrastructure:
 #   .1=GW  .10=DNS  .11-.16/.18=servers (MAC-locked)  .21-.25=mc-workstations
 $vmIpMap = [ordered]@{
@@ -64,7 +89,7 @@ $vmIpMap = [ordered]@{
     "VDE-ENG01" = 135; "VDE-ENG02" = 136; "VDE-ENG03" = 137
 }
 
-# ── Connect if not already connected ──
+# -- Connect if not already connected --
 if (-not $global:DefaultVIServers -or $global:DefaultVIServers.Count -eq 0) {
     Write-Host "Connecting to vCenter: $vCenter..." -ForegroundColor Cyan
     $vcCred = Get-Credential -Message "vCenter credentials for $vCenter"
@@ -81,53 +106,73 @@ $GuestCred = Get-Credential -Message "Guest OS credentials (local admin on VDE-*
 
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-foreach ($baseName in $vmIpMap.Keys) {
-    $targetIP  = "10.20.0.$($vmIpMap[$baseName])"
-    $vmName    = "$baseName-1-$EventName"
+# Discover VMs on the target network that match VDE-* naming
+Write-Host "Discovering VMs on network matching '*$NetworkName*'..." -ForegroundColor Cyan
+$discoveredVMs = foreach ($key in $vmIpMap.Keys) {
+    $matches = Get-VM -Name "$key-*" -ErrorAction SilentlyContinue | Where-Object {
+        $adapters = Get-NetworkAdapter -VM $_ -ErrorAction SilentlyContinue
+        $adapters | Where-Object { $_.NetworkName -like "*$NetworkName*" }
+    }
+    foreach ($match in $matches) {
+        Write-Host "  Found: $($match.Name)" -ForegroundColor Gray
+        $match
+    }
+}
 
-    $vm = Get-VM -Name $vmName -ErrorAction SilentlyContinue
-    if (-not $vm) {
-        Write-Warning "[$vmName] VM not found — skipping."
-        $results.Add([PSCustomObject]@{ VM=$vmName; TargetIP=$targetIP; Status="NOT FOUND"; Detail="" })
+if (-not $discoveredVMs) {
+    Write-Warning "No VMs matching vmIpMap names (VDE-STU01, VDE-INS01, etc.) found on network '*$NetworkName*'."
+    exit 0
+}
+
+Write-Host "Found $(@($discoveredVMs).Count) VM(s) on '*$NetworkName*'. Starting IP configuration..." -ForegroundColor Green
+
+foreach ($vm in $discoveredVMs) {
+    $vmName = $vm.Name
+
+    # Extract base name (e.g. VDE-STU01 from VDE-STU01-1-IQT-CDO2-CL7)
+    $baseName = $vmIpMap.Keys | Where-Object { $vmName -like "$_-*" } | Select-Object -First 1
+
+    if (-not $baseName) {
+        Write-Warning "[$vmName] No IP map entry found for this VM - skipping."
+        $results.Add([PSCustomObject]@{ VM=$vmName; TargetIP="N/A"; Status="NO IP MAP"; Detail="" })
         continue
     }
+
+    $targetIP = "10.20.0.$($vmIpMap[$baseName])"
 
     # Verify Tools are running
     $guest = Get-VMGuest -VM $vm -ErrorAction SilentlyContinue
     $badTools = @('toolsNotInstalled','toolsNotRunning')
     if (-not $guest -or $badTools -contains $guest.ToolsStatus) {
-        Write-Warning "[$vmName] VMware Tools not running — skipping."
+        Write-Warning "[$vmName] VMware Tools not running - skipping."
         $results.Add([PSCustomObject]@{ VM=$vmName; TargetIP=$targetIP; Status="TOOLS NOT RUNNING"; Detail="" })
         continue
     }
 
     Write-Host "[$vmName] Setting mc-internal NIC (eth_1) to $targetIP/24 ..." -ForegroundColor Cyan
 
-    # The here-string targets ONLY the NIC with a 169.254.x.x (APIPA) address.
+    # Targets ONLY the NIC with a 169.254.x.x (APIPA) address.
     # This ensures eth_0 (VDE) is never touched regardless of its current IP state.
-    $guestScript = @"
-`$adapter = Get-NetAdapter -Physical | Where-Object { `$_.Status -eq 'Up' } | ForEach-Object {
-    `$ip = (Get-NetIPAddress -InterfaceIndex `$_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
-    if (`$ip -like '169.254.*') { `$_ }
-} | Select-Object -First 1
-
-if (-not `$adapter) {
-    Write-Output "SKIP: No APIPA (169.254.x.x) adapter found - may already be set or NIC is down"
-    exit 0
-}
-
-# Remove existing IP(s) on that adapter
-Get-NetIPAddress -InterfaceIndex `$adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Remove-NetIPAddress -Confirm:`$false -ErrorAction SilentlyContinue
-
-# Disable DHCP
-Set-NetIPInterface -InterfaceIndex `$adapter.ifIndex -Dhcp Disabled -ErrorAction SilentlyContinue
-
-# Assign static IP
-New-NetIPAddress -InterfaceIndex `$adapter.ifIndex -IPAddress "$targetIP" -PrefixLength 24 -ErrorAction Stop | Out-Null
-
-Write-Output "OK: `$(`$adapter.Name) -> $targetIP/24"
-"@
+    $guestScript = @(
+        '$adapter = Get-NetAdapter -Physical | Where-Object { $_.Status -eq ''Up'' } | ForEach-Object {'
+        '    $ip = (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress'
+        '    if ($ip -like ''169.254.*'') { $_ }'
+        '} | Select-Object -First 1'
+        ''
+        'if (-not $adapter) {'
+        '    Write-Output "SKIP: No APIPA (169.254.x.x) adapter found - may already be set or NIC is down"'
+        '    exit 0'
+        '}'
+        ''
+        'Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |'
+        '    Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue'
+        ''
+        'Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -Dhcp Disabled -ErrorAction SilentlyContinue'
+        ''
+        "New-NetIPAddress -InterfaceIndex `$adapter.ifIndex -IPAddress '$targetIP' -PrefixLength 24 -ErrorAction Stop | Out-Null"
+        ''
+        "Write-Output 'OK: ' + `$adapter.Name + ' -> $targetIP/24'"
+    ) -join "`n"
 
     try {
         $result = Invoke-VMScript -VM $vm -ScriptText $guestScript -GuestCredential $GuestCred -ScriptType Powershell -ErrorAction Stop
@@ -143,9 +188,13 @@ Write-Output "OK: `$(`$adapter.Name) -> $targetIP/24"
     }
 }
 
-# ── Summary ──
+# -- Summary --
 Write-Host "`n=== mc-internal IP Fix Summary ===" -ForegroundColor Cyan
-$results | Group-Object Status | ForEach-Object { Write-Host "  $($_.Name): $($_.Count)" }
+if ($results.Count -eq 0) {
+    Write-Warning "No VMs were processed. Check that NetworkName '$NetworkName' matches a portgroup and that VM names like 'VDE-STU01-1-$EventName' exist in vCenter."
+} else {
+    $results | Group-Object Status | ForEach-Object { Write-Host "  $($_.Name): $($_.Count)" }
+}
 
 if ($OutputFile) {
     $results | Export-Csv -Path $OutputFile -NoTypeInformation:($PSVersionTable.PSVersion.Major -lt 6)
