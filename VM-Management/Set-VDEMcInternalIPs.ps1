@@ -1,15 +1,17 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Sets static IP addresses on the mc-internal NIC (eth_1) for all VDE-* client VMs in IQT-CL-DT2.
+    Sets static IP configuration on the mc-internal NIC (eth_1) for all VDE-* client VMs in IQT-CL-DT2.
 
 .DESCRIPTION
-    Targets only the NIC with an APIPA (169.254.x.x) address - which is always eth_1 (mc-internal)
-    on VDE-STU, VDE-INS, and VDE-ENG VMs when guest customization has failed.
+    Targets the guest adapter that corresponds to the VM NIC connected to the selected
+    mc-internal portgroup. Verifies the current IPv4 address and default gateway on that
+    adapter, then corrects them if they do not match the expected values.
 
     Expected configuration per terraform.tfvars (04_clients):
       eth_0 : VDE network        -> 10.99.10.<ip_start>/24  (not touched by this script)
       eth_1 : mc-internal        -> 10.20.0.<ip_start>/24   (fixed by this script)
+              default gateway    -> 10.20.0.1
 
     IP map (conflict-free, starting at .100 to avoid Manticore infrastructure):
       Manticore reserved: .1 (GW), .10 (DNS), .11-.16/.18 (servers), .21-.25 (workstations)
@@ -33,11 +35,12 @@
 
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1
-    Prompts for credentials and fixes mc-internal IPs on all VDE-* VMs.
+    Prompts for credentials and verifies/fixes mc-internal IP and gateway on all VDE-* VMs.
 
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1 -NetworkName "IQT-CL-DT2" -OutputFile "mc-internal-fix.csv"
-    Only processes VMs that have a NIC connected to the IQT-CL-DT2 portgroup.
+    Only processes VMs that have a NIC connected to the IQT-CL-DT2 portgroup and
+    verifies/fixes the matching guest adapter configuration.
 
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1 -vCenter "c1r1r12-vcsa-01.texnet1.net" -OutputFile "mc-internal-fix.csv"
@@ -75,6 +78,8 @@ if (-not $PSBoundParameters.ContainsKey('EventName')) {
 # -- VM name -> last octet for 10.20.0.x --
 # Range starts at .100 to avoid Manticore infrastructure:
 #   .1=GW  .10=DNS  .11-.16/.18=servers (MAC-locked)  .21-.25=mc-workstations
+$defaultGateway = '10.20.0.1'
+
 $vmIpMap = [ordered]@{
     "VDE-STU01" = 100; "VDE-STU02" = 101; "VDE-STU03" = 102; "VDE-STU04" = 103
     "VDE-STU05" = 104; "VDE-STU06" = 105; "VDE-STU07" = 106; "VDE-STU08" = 107
@@ -109,11 +114,11 @@ $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 # Discover VMs on the target network that match VDE-* naming
 Write-Host "Discovering VMs on network matching '*$NetworkName*'..." -ForegroundColor Cyan
 $discoveredVMs = foreach ($key in $vmIpMap.Keys) {
-    $matches = Get-VM -Name "$key-*" -ErrorAction SilentlyContinue | Where-Object {
+    $vmMatches = Get-VM -Name "$key-*" -ErrorAction SilentlyContinue | Where-Object {
         $adapters = Get-NetworkAdapter -VM $_ -ErrorAction SilentlyContinue
         $adapters | Where-Object { $_.NetworkName -like "*$NetworkName*" }
     }
-    foreach ($match in $matches) {
+    foreach ($match in $vmMatches) {
         Write-Host "  Found: $($match.Name)" -ForegroundColor Gray
         $match
     }
@@ -149,29 +154,78 @@ foreach ($vm in $discoveredVMs) {
         continue
     }
 
-    Write-Host "[$vmName] Setting mc-internal NIC (eth_1) to $targetIP/24 ..." -ForegroundColor Cyan
+    $targetNic = Get-NetworkAdapter -VM $vm -ErrorAction SilentlyContinue | Where-Object {
+        $_.NetworkName -like "*$NetworkName*"
+    } | Select-Object -First 1
 
-    # Targets ONLY the NIC with a 169.254.x.x (APIPA) address.
-    # This ensures eth_0 (VDE) is never touched regardless of its current IP state.
+    if (-not $targetNic) {
+        Write-Warning "[$vmName] No NIC on '*$NetworkName*' found during configuration - skipping."
+        $results.Add([PSCustomObject]@{ VM=$vmName; TargetIP=$targetIP; Status="NIC NOT FOUND"; Detail="No adapter on target network" })
+        continue
+    }
+
+    $targetMac = ($targetNic.MacAddress -replace '[:-]', '').ToUpperInvariant()
+
+    Write-Host "[$vmName] Verifying mc-internal NIC ($($targetNic.Name)) for $targetIP/24 with gateway $defaultGateway ..." -ForegroundColor Cyan
+
+    # Use the vSphere NIC MAC to identify the matching guest adapter, then verify the
+    # current IP and gateway before deciding whether a change is needed.
     $guestScript = @(
-        '$adapter = Get-NetAdapter -Physical | Where-Object { $_.Status -eq ''Up'' } | ForEach-Object {'
-        '    $ip = (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress'
-        '    if ($ip -like ''169.254.*'') { $_ }'
+        "`$targetMac = '$targetMac'"
+        "`$targetIP = '$targetIP'"
+        "`$defaultGateway = '$defaultGateway'"
+        '$adapter = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object {'
+        '    ($_.MacAddress -replace ''-'','''').ToUpperInvariant() -eq $targetMac'
         '} | Select-Object -First 1'
         ''
         'if (-not $adapter) {'
-        '    Write-Output "SKIP: No APIPA (169.254.x.x) adapter found - may already be set or NIC is down"'
+        '    Write-Output ("SKIP: Target guest adapter not found for MAC " + $targetMac)'
+        '    exit 0'
+        '}'
+        ''
+        '$allIPv4 = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue'
+        '$apipaIPv4 = $allIPv4 | Where-Object { $_.IPAddress -like ''169.254.*'' } | Select-Object -First 1'
+        '$currentIPv4 = $allIPv4 |'
+        '    Where-Object { $_.IPAddress -notlike ''169.254.*'' } | Select-Object -First 1'
+        '$currentGateway = (Get-NetRoute -InterfaceIndex $adapter.ifIndex -DestinationPrefix ''0.0.0.0/0'' -ErrorAction SilentlyContinue |'
+        '    Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1).NextHop'
+        '$reasons = New-Object ''System.Collections.Generic.List[string]'''
+        ''
+        'if ($apipaIPv4) {'
+        '    $reasons.Add("APIPA detected") | Out-Null'
+        '}'
+        ''
+        'if ($currentIPv4) {'
+        '    if ($currentIPv4.IPAddress -ne $targetIP) {'
+        '        $reasons.Add("Wrong IP detected (" + $currentIPv4.IPAddress + ")") | Out-Null'
+        '    }'
+        '} elseif (-not $apipaIPv4) {'
+        '    $reasons.Add("No IPv4 detected") | Out-Null'
+        '}'
+        ''
+        'if ($currentGateway -ne $defaultGateway) {'
+        '    if ([string]::IsNullOrWhiteSpace($currentGateway)) {'
+        '        $reasons.Add("Missing gateway detected") | Out-Null'
+        '    } else {'
+        '        $reasons.Add("Wrong gateway detected (" + $currentGateway + ")") | Out-Null'
+        '    }'
+        '}'
+        ''
+        'if ($reasons.Count -eq 0) {'
+        '    Write-Output ("SKIP: Already correct - " + $adapter.Name + " -> " + $targetIP + "/24 gw " + $defaultGateway)'
         '    exit 0'
         '}'
         ''
         'Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |'
         '    Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue'
+        'Get-NetRoute -InterfaceIndex $adapter.ifIndex -DestinationPrefix ''0.0.0.0/0'' -ErrorAction SilentlyContinue |'
+        '    Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue'
         ''
         'Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -Dhcp Disabled -ErrorAction SilentlyContinue'
         ''
-        "New-NetIPAddress -InterfaceIndex `$adapter.ifIndex -IPAddress '$targetIP' -PrefixLength 24 -ErrorAction Stop | Out-Null"
+        'New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress $targetIP -PrefixLength 24 -DefaultGateway $defaultGateway -ErrorAction Stop | Out-Null'
         ''
-        "Write-Output 'OK: ' + `$adapter.Name + ' -> $targetIP/24'"
+        'Write-Output ("OK: " + $adapter.Name + " [" + ($reasons -join ''; '') + "] -> " + $targetIP + "/24 gw " + $defaultGateway)'
     ) -join "`n"
 
     try {
