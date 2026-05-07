@@ -208,12 +208,12 @@ foreach ($vm in $vms | Sort-Object Name) {
 # --- Summary ---
 $success = ($results | Where-Object { $_.RevertStatus -eq 'SUCCESS' }).Count
 $errors  = ($results | Where-Object { $_.RevertStatus -eq 'ERROR'   }).Count
-$dryrun  = ($results | Where-Object { $_.RevertStatus -eq 'DRYRUN'  }).Count
+$dryrunCount  = ($results | Where-Object { $_.RevertStatus -eq 'DRYRUN'  }).Count
 
 Write-Host "`n--- Summary ---" -ForegroundColor Cyan
 Write-Host "  Total VMs  : $($vms.Count)" -ForegroundColor White
 if ($DryRun) {
-    Write-Host "  Would revert : $dryrun" -ForegroundColor Cyan
+    Write-Host "  Would revert : $dryrunCount" -ForegroundColor Cyan
 } else {
     Write-Host "  Success    : $success" -ForegroundColor Green
     Write-Host "  Errors     : $errors" -ForegroundColor $(if ($errors -gt 0) { 'Red' } else { 'White' })

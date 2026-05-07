@@ -204,12 +204,12 @@ foreach ($vm in $vms | Sort-Object Name) {
 $success = ($results | Where-Object { $_.Status -eq 'SUCCESS' }).Count
 $skipped = ($results | Where-Object { $_.Status -eq 'SKIPPED' }).Count
 $errors  = ($results | Where-Object { $_.Status -eq 'ERROR'   }).Count
-$dryrun  = ($results | Where-Object { $_.Status -eq 'DRYRUN'  }).Count
+$dryrunCount  = ($results | Where-Object { $_.Status -eq 'DRYRUN'  }).Count
 
 Write-Host "`n--- Summary ---" -ForegroundColor Cyan
 Write-Host "  Total VMs  : $($vms.Count)" -ForegroundColor White
 if ($DryRun) {
-    Write-Host "  Would act    : $dryrun" -ForegroundColor Cyan
+    Write-Host "  Would act    : $dryrunCount" -ForegroundColor Cyan
 } else {
     Write-Host "  Success    : $success" -ForegroundColor Green
     Write-Host "  Skipped    : $skipped" -ForegroundColor Yellow

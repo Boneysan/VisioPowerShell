@@ -305,12 +305,12 @@ foreach ($vm in $vms | Sort-Object Name) {
 # --- Summary ---
 $success = ($results | Where-Object { $_.ExpandStatus -eq 'SUCCESS' }).Count
 $errors  = ($results | Where-Object { $_.ExpandStatus -eq 'ERROR'   }).Count
-$dryrun  = ($results | Where-Object { $_.ExpandStatus -eq 'DRYRUN'  }).Count
+$dryrunCount  = ($results | Where-Object { $_.ExpandStatus -eq 'DRYRUN'  }).Count
 
 Write-Host "`n--- Summary ---" -ForegroundColor Cyan
 Write-Host "  VMs matched  : $($vms.Count)" -ForegroundColor White
 if ($DryRun) {
-    Write-Host "  Would expand : $dryrun" -ForegroundColor Cyan
+    Write-Host "  Would expand : $dryrunCount" -ForegroundColor Cyan
 }
 else {
     Write-Host "  Expanded     : $success" -ForegroundColor Green
