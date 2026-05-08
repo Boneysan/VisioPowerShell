@@ -38,7 +38,8 @@
     WARNING: This permanently deletes the existing VM from disk before cloning.
 
 .PARAMETER PowerOffBeforeClone
-    Optional switch. Power off VMs before cloning if they are running.
+    Optional switch. Defaults to enabled. Power off VMs before cloning if they are running.
+    Use -PowerOffBeforeClone:$false to allow cloning powered-on VMs.
     Clones of powered-on VMs may contain a crash-consistent (not application-consistent) state.
 
 .PARAMETER vCenter
@@ -97,7 +98,7 @@ param(
     [switch]$ForceReclone,
 
     [Parameter(Mandatory=$false)]
-    [switch]$PowerOffBeforeClone,
+    [switch]$PowerOffBeforeClone = $true,
 
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
