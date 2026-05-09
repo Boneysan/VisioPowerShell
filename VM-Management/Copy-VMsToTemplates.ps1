@@ -4,9 +4,11 @@
 
 .DESCRIPTION
     Enumerates all VMs in the specified source folder, creates a clone of each, and
-    converts the clone to a VM template in the target template folder. Designed for
+    places the clone in the target template folder as a clone source VM. Designed for
     building a "clone source" snapshot of an entire cyber range network. Powered-on
-    VMs can optionally be powered off before cloning. Supports DryRun mode.
+    VMs can optionally be powered off before cloning. By default, creates a baseline
+    snapshot on each newly cloned VM so it can be reverted and reused safely.
+    Supports DryRun mode.
 
 .PARAMETER SourceFolder
     Required. The vSphere folder path containing the VMs to clone (e.g. "CyberRange\Exercise01").
@@ -48,6 +50,21 @@
 .PARAMETER DryRun
     Optional switch. Reports what would happen without making any changes.
 
+.PARAMETER CreateBaselineSnapshot
+    Optional switch. Enabled by default. Create a snapshot on each newly cloned VM.
+    Set -CreateBaselineSnapshot:$false to skip snapshot creation.
+
+.PARAMETER BaselineSnapshotName
+    Optional. Name of the baseline snapshot to create on each clone.
+    Default: "Template-Baseline".
+
+.PARAMETER BaselineSnapshotDescription
+    Optional. Description for the baseline snapshot.
+
+.PARAMETER OverwriteBaselineSnapshot
+    Optional switch. If a baseline snapshot with the same name exists on the clone,
+    remove it before creating a fresh one.
+
 .PARAMETER OutputFile
     Optional. Path to export the results as CSV.
 
@@ -60,7 +77,8 @@
     Clone all VMs in Exercise01 with a prefix, powering off running VMs first.
 
 .OUTPUTS
-    CSV with columns: VMName, TemplateName, SourceDatastore, TargetDatastore, SourcePowerState, Status, Detail, Timestamp
+    CSV with columns: VMName, TemplateName, SourceDatastore, TargetDatastore,
+         SourcePowerState, Status, Detail, Timestamp
 
 .NOTES
     Requires:
@@ -98,7 +116,7 @@ param(
     [switch]$ForceReclone,
 
     [Parameter(Mandatory=$false)]
-    [switch]$PowerOffBeforeClone = $true,
+    [switch]$PowerOffBeforeClone,
 
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
@@ -107,8 +125,28 @@ param(
     [switch]$DryRun,
 
     [Parameter(Mandatory=$false)]
+    [switch]$CreateBaselineSnapshot,
+
+    [Parameter(Mandatory=$false)]
+    [string]$BaselineSnapshotName = 'Template-Baseline',
+
+    [Parameter(Mandatory=$false)]
+    [string]$BaselineSnapshotDescription = 'Baseline snapshot created during template source clone workflow.',
+
+    [Parameter(Mandatory=$false)]
+    [switch]$OverwriteBaselineSnapshot,
+
+    [Parameter(Mandatory=$false)]
     [string]$OutputFile
 )
+
+# Preserve prior behavior: these switches are enabled by default unless explicitly set.
+if (-not $PSBoundParameters.ContainsKey('PowerOffBeforeClone')) {
+    $PowerOffBeforeClone = $true
+}
+if (-not $PSBoundParameters.ContainsKey('CreateBaselineSnapshot')) {
+    $CreateBaselineSnapshot = $true
+}
 
 # --- Connection Phase ---
 # Connect to vCenter if specified via parameter, otherwise assume an active session exists
@@ -199,6 +237,11 @@ Write-Host "  Target Folder   : $TargetFolder" -ForegroundColor White
 Write-Host "  Name Prefix     : $NamePrefix" -ForegroundColor White
 Write-Host "  Name Suffix     : $NameSuffix" -ForegroundColor White
 Write-Host "  Template Network: $TemplateNetwork" -ForegroundColor White
+Write-Host "  Baseline Snap   : $CreateBaselineSnapshot" -ForegroundColor White
+if ($CreateBaselineSnapshot) {
+    Write-Host "  Snapshot Name   : $BaselineSnapshotName" -ForegroundColor White
+    Write-Host "  Overwrite Snap  : $OverwriteBaselineSnapshot" -ForegroundColor White
+}
 Write-Host "  DryRun          : $DryRun`n" -ForegroundColor White
 
 # Initialize a collection to track the outcome of each VM processing task
@@ -238,6 +281,22 @@ foreach ($vm in $vms | Sort-Object Name) {
     }
     # Determine the target datastore for the template
     $targetDs = if ($Datastore) { Get-Datastore -Name $Datastore -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $srcDs }
+    $srcDsName = if ($srcDs) { $srcDs.Name } else { 'UNKNOWN' }
+    $targetDsName = if ($targetDs) { $targetDs.Name } else { 'UNRESOLVED' }
+
+    if ($Datastore -and -not $targetDs) {
+        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+            -TargetDatastore $targetDsName -SourcePowerState $vm.PowerState `
+            -Status 'ERROR' -Detail "Target datastore '$Datastore' was not found."
+        continue
+    }
+
+    if (-not $Datastore -and -not $targetDs) {
+        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+            -TargetDatastore $targetDsName -SourcePowerState $vm.PowerState `
+            -Status 'ERROR' -Detail "No datastore could be resolved from source VM; specify -Datastore explicitly."
+        continue
+    }
 
     # Logic Step: Check for existing naming collisions in the target folder
     $existingClone = Get-VM -Name $templateName -Location $tgtFolder -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -256,16 +315,16 @@ foreach ($vm in $vms | Sort-Object Name) {
                 Start-Sleep -Seconds 5
             }
             catch {
-                Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-                    -TargetDatastore $targetDs.Name -SourcePowerState $vm.PowerState `
+                Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                    -TargetDatastore $targetDsName -SourcePowerState $vm.PowerState `
                     -Status 'ERROR' -Detail "Failed to delete existing clone: $_"
                 continue
             }
         }
         else {
             # Skip mode: Don't overwrite existing templates unless forced
-            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-                -TargetDatastore $targetDs.Name -SourcePowerState $vm.PowerState `
+            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                -TargetDatastore $targetDsName -SourcePowerState $vm.PowerState `
                 -Status 'SKIPPED' -Detail "Clone '$templateName' already exists (use -ForceReclone to overwrite)"
             continue
         }
@@ -274,9 +333,10 @@ foreach ($vm in $vms | Sort-Object Name) {
     # Handle DryRun early exit
     if ($DryRun) {
         $note = if ($vm.PowerState -eq 'PoweredOn' -and $PowerOffBeforeClone) { "Would power off first, then " } else { "Would " }
-        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-            -TargetDatastore $targetDs.Name -SourcePowerState $vm.PowerState `
-            -Status 'DRYRUN' -Detail "${note}clone to '$TargetFolder', then move NICs to '$TemplateNetwork'"
+        $snapshotNote = if ($CreateBaselineSnapshot) { ", then create baseline snapshot '$BaselineSnapshotName'" } else { '' }
+        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+            -TargetDatastore $targetDsName -SourcePowerState $vm.PowerState `
+            -Status 'DRYRUN' -Detail "${note}clone to '$TargetFolder', then move NICs to '$TemplateNetwork'$snapshotNote"
         continue
     }
 
@@ -298,8 +358,8 @@ foreach ($vm in $vms | Sort-Object Name) {
             $poweredOffByScript = $true
         }
         catch {
-            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-                -TargetDatastore $targetDs.Name -SourcePowerState 'PoweredOn' `
+            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                -TargetDatastore $targetDsName -SourcePowerState 'PoweredOn' `
                 -Status 'ERROR' -Detail "Failed to power off: $_"
             continue
         }
@@ -369,8 +429,8 @@ foreach ($vm in $vms | Sort-Object Name) {
             # Verify if the VM exists before reporting a failure.
             $clone = Get-VM -Name $templateName -Location $tgtFolder -ErrorAction SilentlyContinue | Select-Object -First 1
             if (-not $clone) {
-                Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-                    -TargetDatastore $targetDs.Name -SourcePowerState $originalPowerState `
+                Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                    -TargetDatastore $targetDsName -SourcePowerState $originalPowerState `
                     -Status 'ERROR' -Detail "Clone failed: $_"
                 continue
             }
@@ -396,6 +456,53 @@ foreach ($vm in $vms | Sort-Object Name) {
             }
         }
 
+        # Step: Baseline Snapshot
+        # Create a reusable baseline snapshot on the cloned VM before it is used downstream.
+        $baselineSnapshotError = $null
+        $snapshotSkippedForTemplate = $false
+        if ($CreateBaselineSnapshot) {
+            try {
+                $cloneRefreshed = Get-VM -Id $clone.Id -ErrorAction SilentlyContinue
+                if ($cloneRefreshed) { $clone = $cloneRefreshed }
+
+                $isTemplate = $false
+                $cloneView = $clone | Get-View -Property Config -ErrorAction SilentlyContinue
+                if ($cloneView -and $cloneView.Config) {
+                    $isTemplate = [bool]$cloneView.Config.Template
+                }
+
+                if ($isTemplate) {
+                    $snapshotSkippedForTemplate = $true
+                    Write-Warning "  Clone '$templateName' is a true template; skipping baseline snapshot creation."
+                }
+                else {
+                    $existingSnap = Get-Snapshot -VM $clone -Name $BaselineSnapshotName -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($existingSnap -and $OverwriteBaselineSnapshot) {
+                        Remove-Snapshot -Snapshot $existingSnap -Confirm:$false -ErrorAction Stop | Out-Null
+                        $existingSnap = $null
+                    }
+                    if (-not $existingSnap) {
+                        $snapParams = @{
+                            VM          = $clone
+                            Name        = $BaselineSnapshotName
+                            Confirm     = $false
+                            ErrorAction = 'Stop'
+                        }
+                        if ($BaselineSnapshotDescription) { $snapParams['Description'] = $BaselineSnapshotDescription }
+                        New-Snapshot @snapParams | Out-Null
+                        Write-Host "    Baseline snapshot '$BaselineSnapshotName' created" -ForegroundColor Gray
+                    }
+                    else {
+                        Write-Host "    Baseline snapshot '$BaselineSnapshotName' already exists; keeping existing" -ForegroundColor DarkYellow
+                    }
+                }
+            }
+            catch {
+                $baselineSnapshotError = "Clone created, but baseline snapshot failed: $_"
+                Write-Warning "  $baselineSnapshotError"
+            }
+        }
+
         # Final Step: Restore original power state if we powered off the source
         if ($poweredOffByScript) {
             try {
@@ -410,14 +517,30 @@ foreach ($vm in $vms | Sort-Object Name) {
             }
         }
 
-        # Log successful completion for this VM
-        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-            -TargetDatastore $targetDs.Name -SourcePowerState $originalPowerState `
-            -Status 'SUCCESS' -Detail "Cloned to '$TargetFolder'"
+        # Log completion for this VM
+        if ($baselineSnapshotError) {
+            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                -TargetDatastore $targetDsName -SourcePowerState $originalPowerState `
+                -Status 'ERROR' -Detail $baselineSnapshotError
+        }
+        else {
+            $successDetail = if ($CreateBaselineSnapshot) {
+                if ($snapshotSkippedForTemplate) {
+                    "Cloned to '$TargetFolder'; skipped baseline snapshot because clone is already a true template"
+                } else {
+                    "Cloned to '$TargetFolder' with baseline snapshot '$BaselineSnapshotName'"
+                }
+            } else {
+                "Cloned to '$TargetFolder'"
+            }
+            Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+                -TargetDatastore $targetDsName -SourcePowerState $originalPowerState `
+                -Status 'SUCCESS' -Detail $successDetail
+        }
     }
     catch {
-        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDs.Name `
-            -TargetDatastore $targetDs.Name -SourcePowerState $originalPowerState `
+        Add-Result -VMName $vm.Name -TemplateName $templateName -SourceDatastore $srcDsName `
+            -TargetDatastore $targetDsName -SourcePowerState $originalPowerState `
             -Status 'ERROR' -Detail "Clone/convert failed: $_"
     }
 }
