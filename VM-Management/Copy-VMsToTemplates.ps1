@@ -31,6 +31,10 @@
     Optional. Suffix to append to each template name to distinguish from the source VM.
     Default: "_template".
 
+.PARAMETER ExcludeNamePattern
+    Optional. One or more wildcard patterns used to exclude source VMs by name before
+    cloning. Matching is case-insensitive. Example: '*kraken*', 'mc*'.
+
 .PARAMETER TemplateNetwork
     Optional. Network portgroup to assign all NICs on the clone after creation.
     Default: dead-template
@@ -76,6 +80,10 @@
     .\.Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -TargetFolder "Templates\CyberRange" -NamePrefix "base_" -NameSuffix "" -PowerOffBeforeClone -OutputFile "clone-results.csv"
     Clone all VMs in Exercise01 with a prefix, powering off running VMs first.
 
+.EXAMPLE
+    .\Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -ExcludeNamePattern '*kraken*', 'mc*' -DryRun
+    Preview cloning while excluding VMs whose names contain 'kraken' or start with 'mc'.
+
 .OUTPUTS
     CSV with columns: VMName, TemplateName, SourceDatastore, TargetDatastore,
          SourcePowerState, Status, Detail, Timestamp
@@ -108,6 +116,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$NameSuffix = '_template',
+
+    [Parameter(Mandatory=$false)]
+    [string[]]$ExcludeNamePattern = @(),
 
     [Parameter(Mandatory=$false)]
     [string]$TemplateNetwork = 'dead-template',
@@ -230,12 +241,46 @@ if (-not $vms) {
     exit 0
 }
 
+$excludedVms = @()
+if ($ExcludeNamePattern.Count -gt 0) {
+    $excludedVms = $vms | Where-Object {
+        $vmName = $_.Name
+        foreach ($pattern in $ExcludeNamePattern) {
+            if ($vmName -like $pattern) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    $vms = $vms | Where-Object {
+        $vmName = $_.Name
+        foreach ($pattern in $ExcludeNamePattern) {
+            if ($vmName -like $pattern) {
+                return $false
+            }
+        }
+
+        return $true
+    }
+}
+
+if (-not $vms) {
+    Write-Warning "No VMs remain in source folder '$SourceFolder' after applying exclusion patterns: $($ExcludeNamePattern -join ', ')"
+    exit 0
+}
+
 # Display configuration summary to the user
 Write-Host "`n=== Copy VMs to Templates ===" -ForegroundColor Cyan
 Write-Host "  Source Folder   : $SourceFolder ($($vms.Count) VMs)" -ForegroundColor White
 Write-Host "  Target Folder   : $TargetFolder" -ForegroundColor White
 Write-Host "  Name Prefix     : $NamePrefix" -ForegroundColor White
 Write-Host "  Name Suffix     : $NameSuffix" -ForegroundColor White
+if ($ExcludeNamePattern.Count -gt 0) {
+    Write-Host "  Exclude Pattern : $($ExcludeNamePattern -join ', ')" -ForegroundColor White
+    Write-Host "  Excluded VMs    : $($excludedVms.Count)" -ForegroundColor White
+}
 Write-Host "  Template Network: $TemplateNetwork" -ForegroundColor White
 Write-Host "  Baseline Snap   : $CreateBaselineSnapshot" -ForegroundColor White
 if ($CreateBaselineSnapshot) {
