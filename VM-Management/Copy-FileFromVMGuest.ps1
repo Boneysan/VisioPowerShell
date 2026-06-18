@@ -71,7 +71,8 @@ $Server       = "c1r1r12-vcsa-01.texnet1.net"
 
 # -------------------- Interactive Prompts --------------------
 $PathToSource = Prompt-WithDefault "Enter the full path to the source file on the guest VM"  $PathToSource
-$PathToDest   = Prompt-WithDefault "Enter the name of the target VM"                         $TargetVM
+$TargetVM     = Prompt-WithDefault "Enter the name of the target VM"                         $TargetVM
+$PathToDest   = Prompt-WithDefault "Enter the full local destination path (including file name)" $PathToDest
 $Server       = Prompt-WithDefault "Enter the vCenter or ESXi server address"                $Server
 
 # Gather necessary credentials

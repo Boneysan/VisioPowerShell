@@ -31,6 +31,15 @@
     Optional. Suffix to append to each template name to distinguish from the source VM.
     Default: "_template".
 
+.PARAMETER NameTransformRegex
+    Optional. Regex pattern applied to each source VM name before prefix/suffix are added.
+    Use with -NameTransformReplacement to rewrite names (for example, strip trailing
+    range markers).
+
+.PARAMETER NameTransformReplacement
+    Optional. Replacement string used with -NameTransformRegex.
+    Default: "" (remove matched text).
+
 .PARAMETER ExcludeNamePattern
     Optional. One or more wildcard patterns used to exclude source VMs by name before
     cloning. Matching is case-insensitive. Example: '*kraken*', 'mc*'.
@@ -84,6 +93,10 @@
     .\Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -ExcludeNamePattern '*kraken*', 'mc*' -DryRun
     Preview cloning while excluding VMs whose names contain 'kraken' or start with 'mc'.
 
+.EXAMPLE
+    .\Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -NameTransformRegex '-1-IQT-CDO2-CL7$' -NameTransformReplacement '' -NameSuffix '-May26' -DryRun
+    Preview cloning where names like 'WIN-STU25-1-IQT-CDO2-CL7' become 'WIN-STU25-May26'.
+
 .OUTPUTS
     CSV with columns: VMName, TemplateName, SourceDatastore, TargetDatastore,
          SourcePowerState, Status, Detail, Timestamp
@@ -93,9 +106,6 @@
     - VMware PowerCLI module
     - Permissions to create/manage VMs and templates in vCenter
 
-    Author: GitHub Copilot
-    Version: 1.0
-    Date: April 4, 2026
 #>
 
 param(
@@ -116,6 +126,12 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$NameSuffix = '_template',
+
+    [Parameter(Mandatory=$false)]
+    [string]$NameTransformRegex = '',
+
+    [Parameter(Mandatory=$false)]
+    [string]$NameTransformReplacement = '',
 
     [Parameter(Mandatory=$false)]
     [string[]]$ExcludeNamePattern = @(),
@@ -157,6 +173,16 @@ if (-not $PSBoundParameters.ContainsKey('PowerOffBeforeClone')) {
 }
 if (-not $PSBoundParameters.ContainsKey('CreateBaselineSnapshot')) {
     $CreateBaselineSnapshot = $true
+}
+
+if ($NameTransformRegex) {
+    try {
+        [void][regex]::new($NameTransformRegex)
+    }
+    catch {
+        Write-Error "Invalid -NameTransformRegex pattern '$NameTransformRegex': $_"
+        exit 1
+    }
 }
 
 # --- Connection Phase ---
@@ -277,6 +303,10 @@ Write-Host "  Source Folder   : $SourceFolder ($($vms.Count) VMs)" -ForegroundCo
 Write-Host "  Target Folder   : $TargetFolder" -ForegroundColor White
 Write-Host "  Name Prefix     : $NamePrefix" -ForegroundColor White
 Write-Host "  Name Suffix     : $NameSuffix" -ForegroundColor White
+if ($NameTransformRegex) {
+    Write-Host "  Name Regex      : $NameTransformRegex" -ForegroundColor White
+    Write-Host "  Name Replace    : $NameTransformReplacement" -ForegroundColor White
+}
 if ($ExcludeNamePattern.Count -gt 0) {
     Write-Host "  Exclude Pattern : $($ExcludeNamePattern -join ', ')" -ForegroundColor White
     Write-Host "  Excluded VMs    : $($excludedVms.Count)" -ForegroundColor White
@@ -315,8 +345,19 @@ function Add-Result {
 # --- Main Cloning Loop ---
 foreach ($vm in $vms | Sort-Object Name) {
     $originalPowerState = $vm.PowerState
+    $nameForTemplate = $vm.Name
+    if ($NameTransformRegex) {
+        $nameForTemplate = $nameForTemplate -replace $NameTransformRegex, $NameTransformReplacement
+        if ([string]::IsNullOrWhiteSpace($nameForTemplate)) {
+            Add-Result -VMName $vm.Name -TemplateName '' -SourceDatastore 'UNKNOWN' `
+                -TargetDatastore 'UNRESOLVED' -SourcePowerState $vm.PowerState `
+                -Status 'ERROR' -Detail "Name transform produced an empty template name. Adjust -NameTransformRegex/-NameTransformReplacement."
+            continue
+        }
+    }
+
     # Construct the target template name using prefix/suffix rules
-    $templateName = "$NamePrefix$($vm.Name)$NameSuffix"
+    $templateName = "$NamePrefix$nameForTemplate$NameSuffix"
     
     # Resolve the source datastore (handling potential multi-ID lists)
     $srcDs = $null
