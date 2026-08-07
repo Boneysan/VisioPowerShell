@@ -6,8 +6,8 @@
     Connects to vCenter, finds VMs located in the specified Templates folder path,
     and reports where those VMs are placed (folder, cluster, host, datastore, network).
 
-    The script also builds VM-level visibility for all folders and highlights non-template
-    VMs that are linked to template-folder VMs via clone/deploy source history.
+    The script also builds VM-level visibility for all folders and highlights current
+    template-scope VMs with live dependency indicators.
 
 .PARAMETER vCenter
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing connection.
@@ -32,11 +32,21 @@
     Optional. CSV output path for all VM rows across template and non-template folders.
 
 .PARAMETER LinkedToTemplateOutputFile
-    Optional. CSV output path for non-template VMs linked to template-folder VMs.
+    Optional. CSV output path for a live template-scope dependency report.
 
-.PARAMETER SourceLookbackDays
-    Optional. Number of days of vCenter events to search when mapping VMs to source
-    templates or source VMs. Default: 365.
+.PARAMETER TemplateUsageSummaryFile
+    Optional. CSV output path for template-source usage summary (linked VM counts).
+
+.PARAMETER UnusedTemplateOutputFile
+    Optional. CSV output path for template-scope sources with zero linked VMs.
+
+.PARAMETER TemplateDependentVmOutputFile
+    Optional. CSV output path for VMs dependent on template-scope VMs via linked-disk parent backing.
+
+.PARAMETER TemplateNoChildVmOutputFile
+    Optional. CSV output path for template-scope VMs that have no linked-disk child VMs.
+    If omitted while TemplateDependentVmOutputFile is provided, a sibling file is auto-created
+    using the dependent report name with -no-child-vms appended.
 
 .EXAMPLE
     .\Get-TemplateFolderUsage.ps1
@@ -55,17 +65,25 @@
     Exports all VMs across template and non-template folders.
 
 .EXAMPLE
-    .\Get-TemplateFolderUsage.ps1 -OnlyPoweredOn -SourceLookbackDays 730
-    Includes only running VMs and searches 2 years of clone/deploy history.
+    .\Get-TemplateFolderUsage.ps1 -AllVMOutputFile "all-vms.csv" -LinkedToTemplateOutputFile "linked-to-template.csv"
+    Exports all VMs and a focused template-scope live dependency report.
 
 .EXAMPLE
-    .\Get-TemplateFolderUsage.ps1 -AllVMOutputFile "all-vms.csv" -LinkedToTemplateOutputFile "linked-to-template.csv"
-    Exports all VMs and a focused linked-to-template report.
+    .\Get-TemplateFolderUsage.ps1 -TemplateUsageSummaryFile "template-usage-summary.csv" -UnusedTemplateOutputFile "unused-template-sources.csv"
+    Exports per-folder template-scope usage counts and a candidate list with no live dependency indicators.
+
+.EXAMPLE
+    .\Get-TemplateFolderUsage.ps1 -TemplateDependentVmOutputFile "template-dependent-vms.csv"
+    Exports child VMs that reference template-scope VM disk backing parents.
+
+.EXAMPLE
+    .\Get-TemplateFolderUsage.ps1 -TemplateDependentVmOutputFile "template-dependent-vms.csv" -TemplateNoChildVmOutputFile "template-no-child-vms.csv"
+    Exports dependent child VMs and template-scope VMs that have no linked-disk child VMs.
 
 .OUTPUTS
-    Template VM details columns:
-    - VMName, FolderPath, IsTemplate, PowerState, Cluster, Host, Datastores, Networks,
-      NumCPU, MemoryGB, ProvisionedSpaceGB, UsedSpaceGB, CreateDate
+        Template-scope inventory columns:
+        - Name, ObjectType, FolderPath, IsTemplate, PowerState, Cluster, Host, Datastores,
+            Networks, NumCPU, MemoryGB, ProvisionedSpaceGB, UsedSpaceGB, CreateDate
 
     Other folder summary columns:
     - FolderPath, VMCount, PoweredOnCount, TemplateCount, TotalvCPU, TotalMemoryGB,
@@ -73,9 +91,28 @@
 
         All VM detail columns:
         - VMName, FolderPath, InTemplateScope, IsTemplate, PowerState, UsageCategory,
-            SourceType, SourceName, SourceFoundVia, HasLinkedDiskHint,
-            LinkedToTemplateScope, LinkedTemplateName, Cluster, Host, Datastores, Networks,
-            NumCPU, MemoryGB, ProvisionedSpaceGB, UsedSpaceGB, CreateDate
+            HasLinkedDiskHint, Cluster, Host, Datastores, Networks,
+            NumCPU, MemoryGB, ProvisionedSpaceGB, UsedSpaceGB, CreateDate,
+            LiveDependencyCount, LiveDependencySummary, LiveSnapshotCount,
+            HasLinkedDiskBacking, HasIsoAttachment, HasRdmBacking
+
+        Template usage summary columns:
+        - FolderPath, VMCount, PoweredOnCount, TemplateCount,
+            LiveDependencyVMCount, LiveDependencyIndicatorCount, CandidateStatus
+
+        Template-linked VM detail columns:
+        - VMName, FolderPath, IsTemplate, PowerState, Cluster, Host, CreateDate,
+            LiveDependencyCount, LiveDependencySummary, LiveSnapshotCount,
+            HasLinkedDiskBacking, HasIsoAttachment, HasRdmBacking
+
+        Template dependent VM columns:
+        - ParentTemplateScopeVMName, ParentTemplateScopeFolderPath,
+            ParentVMCreateDate, ChildVMName, ChildVMFolderPath, ChildVMCreateDate,
+            ChildCluster, ChildHost, DependencyType
+
+        Template-scope VMs with no child VM columns:
+        - TemplateScopeVMName, TemplateScopeFolderPath, TemplateScopeVMCreateDate,
+            IsTemplate, PowerState, Cluster, Host, ChildVMCount
 
 .NOTES
     Requires:
@@ -83,8 +120,8 @@
     - Read access to vCenter inventory
 
     Author: GitHub Copilot
-    Version: 1.0
-    Date: August 6, 2026
+    Version: 1.1
+    Date: August 7, 2026
 #>
 
 param(
@@ -113,8 +150,16 @@ param(
     [string]$LinkedToTemplateOutputFile,
 
     [Parameter(Mandatory=$false)]
-    [ValidateRange(1, 3650)]
-    [int]$SourceLookbackDays = 365
+    [string]$TemplateUsageSummaryFile,
+
+    [Parameter(Mandatory=$false)]
+    [string]$UnusedTemplateOutputFile,
+
+    [Parameter(Mandatory=$false)]
+    [string]$TemplateDependentVmOutputFile,
+
+    [Parameter(Mandatory=$false)]
+    [string]$TemplateNoChildVmOutputFile
 )
 
 if ($vCenter) {
@@ -139,6 +184,22 @@ else {
 function ConvertTo-NormalizedPathString {
     param([string]$Path)
     return (($Path -replace '\\', '/').Trim('/').Trim())
+}
+
+function ConvertTo-NormalizedDatastoreFilePath {
+    param([string]$Path)
+
+    if (-not $Path) {
+        return $null
+    }
+
+    # Normalize path text so backing parent matches are stable across minor format differences.
+    $normalized = ($Path -replace '\\', '/').Trim()
+    if (-not $normalized) {
+        return $null
+    }
+
+    return $normalized.ToLowerInvariant()
 }
 
 $viewCache = @{}
@@ -194,9 +255,95 @@ function Get-FolderPathFromMoRef {
     return $path
 }
 
+function Get-SnapshotTreeCount {
+    param($SnapshotTree)
+
+    if (-not $SnapshotTree) {
+        return 0
+    }
+
+    $count = 0
+    foreach ($snapshot in @($SnapshotTree)) {
+        $count++
+        if ($snapshot.ChildSnapshotList) {
+            $count += Get-SnapshotTreeCount -SnapshotTree $snapshot.ChildSnapshotList
+        }
+    }
+
+    return $count
+}
+
+function Get-LiveVmDependencySummary {
+    param($VmView)
+
+    $dependencyFlags = [System.Collections.Generic.List[string]]::new()
+    $snapshotCount = 0
+    $hasLinkedDiskBacking = $false
+    $hasIsoAttachment = $false
+    $hasRdmBacking = $false
+
+    if ($VmView -and $VmView.Snapshot -and $VmView.Snapshot.RootSnapshotList) {
+        $snapshotCount = Get-SnapshotTreeCount -SnapshotTree $VmView.Snapshot.RootSnapshotList
+        if ($snapshotCount -gt 0) {
+            [void]$dependencyFlags.Add("Snapshots($snapshotCount)")
+        }
+    }
+
+    if ($VmView -and $VmView.Config -and $VmView.Config.Hardware -and $VmView.Config.Hardware.Device) {
+        foreach ($device in @($VmView.Config.Hardware.Device)) {
+            if ($device -is [VMware.Vim.VirtualDisk]) {
+                if ($device.Backing -and $device.Backing.PSObject.Properties['Parent'] -and $device.Backing.Parent) {
+                    $hasLinkedDiskBacking = $true
+                }
+
+                if ($device.Backing) {
+                    $backingTypeName = $device.Backing.GetType().Name
+                    if ($backingTypeName -match 'RawDeviceMapping') {
+                        $hasRdmBacking = $true
+                    }
+                }
+            }
+            elseif ($device -is [VMware.Vim.VirtualCdrom]) {
+                $hasConnectedCdrom = $false
+                if ($device.Connectable) {
+                    $hasConnectedCdrom = [bool]($device.Connectable.Connected -or $device.Connectable.StartConnected)
+                }
+
+                if ($device.Backing -and $device.Backing.PSObject.Properties['FileName'] -and $device.Backing.FileName) {
+                    $hasIsoAttachment = $true
+                }
+                elseif ($hasConnectedCdrom) {
+                    $hasIsoAttachment = $true
+                }
+            }
+        }
+    }
+
+    if ($hasLinkedDiskBacking) {
+        [void]$dependencyFlags.Add('LinkedDiskBacking')
+    }
+    if ($hasIsoAttachment) {
+        [void]$dependencyFlags.Add('CdromOrIsoAttached')
+    }
+    if ($hasRdmBacking) {
+        [void]$dependencyFlags.Add('RdmBacking')
+    }
+
+    return [PSCustomObject]@{
+        LiveDependencyCount    = $dependencyFlags.Count
+        LiveDependencySummary  = if ($dependencyFlags.Count -gt 0) { $dependencyFlags -join '; ' } else { 'None' }
+        LiveSnapshotCount      = $snapshotCount
+        HasLinkedDiskBacking   = $hasLinkedDiskBacking
+        HasIsoAttachment      = $hasIsoAttachment
+        HasRdmBacking         = $hasRdmBacking
+    }
+}
+
 Write-Host "Retrieving VM folders and VMs..." -ForegroundColor Cyan
 $allFolders = Get-Folder -Type VM -ErrorAction SilentlyContinue
-$allVMs = Get-VM -ErrorAction SilentlyContinue
+$allVMsAll = Get-VM -ErrorAction SilentlyContinue
+$allVMs = $allVMsAll
+$allTemplates = Get-Template -ErrorAction SilentlyContinue
 
 if (-not $allFolders) {
     Write-Error "No VM folders were found in inventory."
@@ -210,6 +357,7 @@ if (-not $allVMs) {
 if ($OnlyPoweredOn) {
     $allVMs = $allVMs | Where-Object { $_.PowerState -eq 'PoweredOn' }
     Write-Host "Filtering to powered-on VMs only." -ForegroundColor Yellow
+    Write-Host "NOTE: Powered-on filter also limits template usage mapping to powered-on VMs." -ForegroundColor Yellow
 }
 
 if (-not $allVMs) {
@@ -244,7 +392,37 @@ if (-not $matchedFolders) {
 }
 
 $templateRootPaths = $matchedFolders | Select-Object -ExpandProperty Path -Unique
-$templateNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+
+function Test-IsInTemplateScope {
+    param(
+        [string]$CandidateFolderPath,
+        [string[]]$RootPaths,
+        [bool]$IncludeChildren
+    )
+
+    $normalizedFolderPath = ConvertTo-NormalizedPathString -Path $CandidateFolderPath
+
+    foreach ($rootPath in $RootPaths) {
+        $normalizedRootPath = ConvertTo-NormalizedPathString -Path $rootPath
+
+        if ($IncludeChildren) {
+            if (
+                $normalizedFolderPath -ieq $normalizedRootPath -or
+                $normalizedFolderPath.StartsWith("$normalizedRootPath/", [System.StringComparison]::OrdinalIgnoreCase)
+            ) {
+                return $true
+            }
+        }
+        else {
+            if ($normalizedFolderPath -ieq $normalizedRootPath) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
 
 Write-Host "Template folder scope:" -ForegroundColor Cyan
 $templateRootPaths | ForEach-Object {
@@ -254,93 +432,23 @@ if ($IncludeTemplateSubfolders) {
     Write-Host "Including subfolders under template path(s)." -ForegroundColor White
 }
 
-# Build source relationship index from vCenter events.
-# NOTE: vSphere does not always keep a permanent template-origin link on VM objects,
-# so event history is used when available.
-$sourceByVmName = @{}
-try {
-    $startEventTime = (Get-Date).AddDays(-$SourceLookbackDays)
-    Write-Host "Building source map from clone/deploy events since $($startEventTime.ToString('yyyy-MM-dd'))..." -ForegroundColor Cyan
-    $sourceEvents = Get-VIEvent -Start $startEventTime -MaxSamples 200000 -ErrorAction Stop |
-        Where-Object {
-            $_ -is [VMware.Vim.VmClonedEvent] -or
-            $_ -is [VMware.Vim.VmBeingDeployedEvent] -or
-            $_ -is [VMware.Vim.VmDeployedEvent]
-        } |
-        Sort-Object CreatedTime -Descending
+$templateObjectIndex = [System.Collections.Generic.List[PSCustomObject]]::new()
+foreach ($tmpl in $allTemplates) {
+    $tmplFolderPath = Get-FolderPathFromMoRef -MoRef $tmpl.ExtensionData.Parent
+    $tmplInScope = Test-IsInTemplateScope -CandidateFolderPath $tmplFolderPath -RootPaths $templateRootPaths -IncludeChildren $IncludeTemplateSubfolders.IsPresent
 
-    foreach ($evt in $sourceEvents) {
-        $targetName = $null
-        if ($evt.Vm -and $evt.Vm.Name) { $targetName = $evt.Vm.Name }
-        if (-not $targetName) { continue }
-        if ($sourceByVmName.ContainsKey($targetName)) { continue }
-
-        $sourceType = 'Unknown'
-        $sourceName = 'Unknown'
-        $foundVia = $evt.GetType().Name
-
-        if ($evt.PSObject.Properties['SourceTemplate'] -and $evt.SourceTemplate -and $evt.SourceTemplate.Name) {
-            $sourceType = 'Template'
-            $sourceName = $evt.SourceTemplate.Name
-        }
-        elseif ($evt.PSObject.Properties['SourceVm'] -and $evt.SourceVm -and $evt.SourceVm.Name) {
-            $sourceType = 'VM'
-            $sourceName = $evt.SourceVm.Name
-        }
-        elseif ($evt.PSObject.Properties['Source'] -and $evt.Source) {
-            if ($evt.Source.Name) {
-                $sourceType = 'SourceObject'
-                $sourceName = $evt.Source.Name
-            }
-        }
-        elseif ($evt.FullFormattedMessage) {
-            if ($evt.FullFormattedMessage -match "from template '([^']+)'") {
-                $sourceType = 'Template'
-                $sourceName = $Matches[1]
-            }
-            elseif ($evt.FullFormattedMessage -match "from VM '([^']+)'") {
-                $sourceType = 'VM'
-                $sourceName = $Matches[1]
-            }
-        }
-
-        $sourceByVmName[$targetName] = [PSCustomObject]@{
-            SourceType  = $sourceType
-            SourceName  = $sourceName
-            SourceFoundVia = $foundVia
-            EventTime   = $evt.CreatedTime
-        }
-    }
-
-    Write-Host "  Source mappings found: $($sourceByVmName.Count)" -ForegroundColor White
-}
-catch {
-    Write-Warning "Unable to build source map from events: $_"
+    $templateObjectIndex.Add([PSCustomObject]@{
+        Name            = $tmpl.Name
+        FolderPath      = $tmplFolderPath
+        InTemplateScope = $tmplInScope
+    })
 }
 
 $vmIndex = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($vm in $allVMs) {
     $folderPath = Get-FolderPathFromMoRef -MoRef $vm.ExtensionData.Parent
-    $normalizedFolderPath = ConvertTo-NormalizedPathString -Path $folderPath
-
-    $inTemplateScope = $false
-    foreach ($rootPath in $templateRootPaths) {
-        $normalizedRootPath = ConvertTo-NormalizedPathString -Path $rootPath
-
-        if ($IncludeTemplateSubfolders) {
-            if ($normalizedFolderPath -ieq $normalizedRootPath -or $normalizedFolderPath.StartsWith("$normalizedRootPath/", [System.StringComparison]::OrdinalIgnoreCase)) {
-                $inTemplateScope = $true
-                break
-            }
-        }
-        else {
-            if ($normalizedFolderPath -ieq $normalizedRootPath) {
-                $inTemplateScope = $true
-                break
-            }
-        }
-    }
+    $inTemplateScope = Test-IsInTemplateScope -CandidateFolderPath $folderPath -RootPaths $templateRootPaths -IncludeChildren $IncludeTemplateSubfolders.IsPresent
 
     $clusterName = 'StandaloneHost'
     if ($vm.VMHost -and $vm.VMHost.Parent) {
@@ -360,18 +468,17 @@ foreach ($vm in $allVMs) {
         MemoryGB       = [math]::Round($vm.MemoryGB, 1)
     })
 
-    if ($inTemplateScope) {
-        [void]$templateNameSet.Add($vm.Name)
-    }
 }
 
 $templateScopedVMs = $vmIndex | Where-Object { $_.InTemplateScope }
-if (-not $templateScopedVMs) {
-    Write-Warning "No VMs found in the selected template folder scope."
+$templateScopedTemplates = $templateObjectIndex | Where-Object { $_.InTemplateScope }
+if (-not $templateScopedVMs -and -not $templateScopedTemplates) {
+    Write-Warning "No template-scope objects (VMs or templates) were found in the selected folder scope."
 }
 
 Write-Host "Collecting detailed data for all VMs..." -ForegroundColor Cyan
 $allVMDetails = [System.Collections.Generic.List[PSCustomObject]]::new()
+$vmDiskRelationshipIndex = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($entry in ($vmIndex | Sort-Object VMName)) {
     $vm = $entry.VMObject
@@ -379,7 +486,7 @@ foreach ($entry in ($vmIndex | Sort-Object VMName)) {
     $datastores = Get-Datastore -RelatedObject $vm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
     $networks = $vm | Get-NetworkAdapter -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NetworkName
 
-    $vmView = $vm | Get-View -Property Config.CreateDate -ErrorAction SilentlyContinue
+    $vmView = $vm | Get-View -Property Config.CreateDate, Config.Hardware.Device, Snapshot, LayoutEx.File -ErrorAction SilentlyContinue
     $createDate = if ($vmView -and $vmView.Config.CreateDate) {
         $vmView.Config.CreateDate.ToString('yyyy-MM-dd HH:mm:ss')
     }
@@ -397,15 +504,6 @@ foreach ($entry in ($vmIndex | Sort-Object VMName)) {
         'PoweredOff'
     }
 
-    $sourceType = 'Unknown'
-    $sourceName = 'Unknown'
-    $sourceFoundVia = 'None'
-    if ($sourceByVmName.ContainsKey($entry.VMName)) {
-        $sourceType = $sourceByVmName[$entry.VMName].SourceType
-        $sourceName = $sourceByVmName[$entry.VMName].SourceName
-        $sourceFoundVia = $sourceByVmName[$entry.VMName].SourceFoundVia
-    }
-
     # Linked clone hint: if any virtual disk backing references a parent backing file,
     # this VM is likely participating in a linked clone chain.
     $hasLinkedDiskHint = $false
@@ -418,11 +516,49 @@ foreach ($entry in ($vmIndex | Sort-Object VMName)) {
         })
     }
 
-    $linkedToTemplateScope = $false
-    $linkedTemplateName = 'Unknown'
-    if ($sourceType -eq 'Template' -and $templateNameSet.Contains($sourceName)) {
-        $linkedToTemplateScope = $true
-        $linkedTemplateName = $sourceName
+    $liveDependency = Get-LiveVmDependencySummary -VmView $vmView
+
+    $diskFileNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $parentDiskFileNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $allVmFileNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    if ($vmView -and $vmView.LayoutEx -and $vmView.LayoutEx.File) {
+        foreach ($layoutFile in @($vmView.LayoutEx.File)) {
+            if (-not $layoutFile) { continue }
+            $layoutFileName = $null
+            if ($layoutFile.PSObject.Properties['Name']) {
+                $layoutFileName = ConvertTo-NormalizedDatastoreFilePath -Path $layoutFile.Name
+            }
+            if ($layoutFileName) {
+                [void]$allVmFileNames.Add($layoutFileName)
+            }
+        }
+    }
+
+    if ($vmView -and $vmView.Config -and $vmView.Config.Hardware -and $vmView.Config.Hardware.Device) {
+        foreach ($device in @($vmView.Config.Hardware.Device)) {
+            if ($device -is [VMware.Vim.VirtualDisk] -and $device.Backing) {
+                if ($device.Backing.PSObject.Properties['FileName'] -and $device.Backing.FileName) {
+                    $diskFileName = ConvertTo-NormalizedDatastoreFilePath -Path ([string]$device.Backing.FileName)
+                    if ($diskFileName) {
+                        [void]$diskFileNames.Add($diskFileName)
+                        [void]$allVmFileNames.Add($diskFileName)
+                    }
+                }
+
+                if (
+                    $device.Backing.PSObject.Properties['Parent'] -and
+                    $device.Backing.Parent -and
+                    $device.Backing.Parent.PSObject.Properties['FileName'] -and
+                    $device.Backing.Parent.FileName
+                ) {
+                    $parentDiskFileName = ConvertTo-NormalizedDatastoreFilePath -Path ([string]$device.Backing.Parent.FileName)
+                    if ($parentDiskFileName) {
+                        [void]$parentDiskFileNames.Add($parentDiskFileName)
+                    }
+                }
+            }
+        }
     }
 
     $allVMDetails.Add([PSCustomObject]@{
@@ -432,12 +568,13 @@ foreach ($entry in ($vmIndex | Sort-Object VMName)) {
         IsTemplate         = $entry.IsTemplate
         PowerState         = $entry.PowerState
         UsageCategory      = $usageCategory
-        SourceType         = $sourceType
-        SourceName         = $sourceName
-        SourceFoundVia     = $sourceFoundVia
         HasLinkedDiskHint  = $hasLinkedDiskHint
-        LinkedToTemplateScope = $linkedToTemplateScope
-        LinkedTemplateName = $linkedTemplateName
+        LiveDependencyCount = $liveDependency.LiveDependencyCount
+        LiveDependencySummary = $liveDependency.LiveDependencySummary
+        LiveSnapshotCount   = $liveDependency.LiveSnapshotCount
+        HasLinkedDiskBacking = $liveDependency.HasLinkedDiskBacking
+        HasIsoAttachment    = $liveDependency.HasIsoAttachment
+        HasRdmBacking       = $liveDependency.HasRdmBacking
         Cluster            = $entry.Cluster
         Host               = $entry.Host
         Datastores         = if ($datastores) { ($datastores | Sort-Object -Unique) -join '; ' } else { 'Unknown' }
@@ -448,18 +585,199 @@ foreach ($entry in ($vmIndex | Sort-Object VMName)) {
         UsedSpaceGB        = [math]::Round($vm.UsedSpaceGB, 1)
         CreateDate         = $createDate
     })
+
+    $vmDiskRelationshipIndex.Add([PSCustomObject]@{
+        VMName              = $entry.VMName
+        FolderPath          = $entry.FolderPath
+        Cluster             = $entry.Cluster
+        Host                = $entry.Host
+        InTemplateScope     = $entry.InTemplateScope
+        IsTemplate          = $entry.IsTemplate
+        CreateDate          = $createDate
+        DiskFileNames       = @($diskFileNames)
+        AllVmFileNames      = @($allVmFileNames)
+        ParentDiskFileNames = @($parentDiskFileNames)
+    })
 }
 
-$templateDetails = $allVMDetails | Where-Object { $_.InTemplateScope }
+$templateScopeVMDetails = $allVMDetails | Where-Object { $_.InTemplateScope }
+
+$templateScopeTemplateDetails =
+    $templateObjectIndex |
+    Where-Object { $_.InTemplateScope } |
+    Sort-Object Name |
+    ForEach-Object {
+        [PSCustomObject]@{
+            Name              = $_.Name
+            ObjectType        = 'Template'
+            FolderPath        = $_.FolderPath
+            IsTemplate        = $true
+            PowerState        = 'N/A'
+            Cluster           = 'N/A'
+            Host              = 'N/A'
+            Datastores        = 'N/A'
+            Networks          = 'N/A'
+            NumCPU            = 'N/A'
+            MemoryGB          = 'N/A'
+            ProvisionedSpaceGB= 'N/A'
+            UsedSpaceGB       = 'N/A'
+            CreateDate        = 'Unknown'
+        }
+    }
+
+$templateScopeVMDisplay =
+    $templateScopeVMDetails |
+    ForEach-Object {
+        [PSCustomObject]@{
+            Name              = $_.VMName
+            ObjectType        = 'VM'
+            FolderPath        = $_.FolderPath
+            IsTemplate        = $_.IsTemplate
+            PowerState        = $_.PowerState
+            Cluster           = $_.Cluster
+            Host              = $_.Host
+            Datastores        = $_.Datastores
+            Networks          = $_.Networks
+            NumCPU            = $_.NumCPU
+            MemoryGB          = $_.MemoryGB
+            ProvisionedSpaceGB= $_.ProvisionedSpaceGB
+            UsedSpaceGB       = $_.UsedSpaceGB
+            CreateDate        = $_.CreateDate
+        }
+    }
+
+$templateDetails = [System.Collections.Generic.List[PSCustomObject]]::new()
+if ($templateScopeTemplateDetails) {
+    foreach ($item in @($templateScopeTemplateDetails)) {
+        [void]$templateDetails.Add($item)
+    }
+}
+if ($templateScopeVMDisplay) {
+    foreach ($item in @($templateScopeVMDisplay)) {
+        [void]$templateDetails.Add($item)
+    }
+}
 
 $linkedToTemplateRows =
-    $allVMDetails |
+    $templateScopeVMDetails |
     Where-Object {
-        -not $_.InTemplateScope -and
         -not $_.IsTemplate -and
-        $_.LinkedToTemplateScope
+        $_.LiveDependencyCount -gt 0
     } |
     Sort-Object VMName
+
+$templateLinkedVmRows =
+    $templateScopeVMDetails |
+    ForEach-Object {
+        [PSCustomObject]@{
+            VMName               = $_.VMName
+            FolderPath           = $_.FolderPath
+            IsTemplate           = $_.IsTemplate
+            PowerState           = $_.PowerState
+            Cluster              = $_.Cluster
+            Host                 = $_.Host
+            CreateDate           = $_.CreateDate
+            LiveDependencyCount  = $_.LiveDependencyCount
+            LiveDependencySummary= $_.LiveDependencySummary
+            LiveSnapshotCount    = $_.LiveSnapshotCount
+            HasLinkedDiskBacking = $_.HasLinkedDiskBacking
+            HasIsoAttachment     = $_.HasIsoAttachment
+            HasRdmBacking        = $_.HasRdmBacking
+        }
+    } |
+    Sort-Object FolderPath, VMName
+
+$templateScopeParentDiskMap = @{}
+foreach ($parentVm in @($vmDiskRelationshipIndex | Where-Object { $_.InTemplateScope })) {
+    foreach ($parentFile in @($parentVm.AllVmFileNames)) {
+        if (-not $parentFile) { continue }
+        if (-not $templateScopeParentDiskMap.ContainsKey($parentFile)) {
+            $templateScopeParentDiskMap[$parentFile] = [System.Collections.Generic.List[PSCustomObject]]::new()
+        }
+
+        $templateScopeParentDiskMap[$parentFile].Add([PSCustomObject]@{
+            ParentTemplateScopeVMName    = $parentVm.VMName
+            ParentTemplateScopeFolderPath= $parentVm.FolderPath
+            ParentVMCreateDate           = $parentVm.CreateDate
+        })
+    }
+}
+
+$templateDependentVmRows = [System.Collections.Generic.List[PSCustomObject]]::new()
+$templateDependentVmSeen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($childVm in @($vmDiskRelationshipIndex)) {
+    foreach ($parentDiskFile in @($childVm.ParentDiskFileNames)) {
+        if (-not $parentDiskFile) { continue }
+        if (-not $templateScopeParentDiskMap.ContainsKey($parentDiskFile)) { continue }
+
+        foreach ($parentVm in @($templateScopeParentDiskMap[$parentDiskFile])) {
+            if ($childVm.VMName -ieq $parentVm.ParentTemplateScopeVMName) { continue }
+
+            $rowKey = "{0}|{1}|{2}|{3}|{4}" -f $parentVm.ParentTemplateScopeVMName, $parentVm.ParentTemplateScopeFolderPath, $childVm.VMName, $childVm.FolderPath, 'LinkedDiskParent'
+            if ($templateDependentVmSeen.Contains($rowKey)) { continue }
+            [void]$templateDependentVmSeen.Add($rowKey)
+
+            $templateDependentVmRows.Add([PSCustomObject]@{
+                ParentTemplateScopeVMName     = $parentVm.ParentTemplateScopeVMName
+                ParentTemplateScopeFolderPath = $parentVm.ParentTemplateScopeFolderPath
+                ParentVMCreateDate            = $parentVm.ParentVMCreateDate
+                ChildVMName                   = $childVm.VMName
+                ChildVMFolderPath             = $childVm.FolderPath
+                ChildVMCreateDate             = $childVm.CreateDate
+                ChildCluster                  = $childVm.Cluster
+                ChildHost                     = $childVm.Host
+                DependencyType                = 'LinkedDiskParent'
+            })
+        }
+    }
+}
+
+$templateDependentVmRows = $templateDependentVmRows | Sort-Object ParentTemplateScopeVMName, ChildVMName
+
+$templateScopeChildParentKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($row in @($templateDependentVmRows)) {
+    $parentKey = "{0}|{1}" -f $row.ParentTemplateScopeVMName, $row.ParentTemplateScopeFolderPath
+    [void]$templateScopeChildParentKeys.Add($parentKey)
+}
+
+$templateScopeNoChildVmRows =
+    $templateScopeVMDetails |
+    ForEach-Object {
+        $key = "{0}|{1}" -f $_.VMName, $_.FolderPath
+        [PSCustomObject]@{
+            TemplateScopeVMName       = $_.VMName
+            TemplateScopeFolderPath   = $_.FolderPath
+            TemplateScopeVMCreateDate = $_.CreateDate
+            IsTemplate                = $_.IsTemplate
+            PowerState                = $_.PowerState
+            Cluster                   = $_.Cluster
+            Host                      = $_.Host
+            ChildVMCount              = if ($templateScopeChildParentKeys.Contains($key)) { 1 } else { 0 }
+        }
+    } |
+    Where-Object { $_.ChildVMCount -eq 0 } |
+    Sort-Object TemplateScopeVMName
+
+$templateUsageSummary =
+    $templateScopeVMDetails |
+    Group-Object FolderPath |
+    ForEach-Object {
+        [PSCustomObject]@{
+            FolderPath              = $_.Name
+            VMCount                 = $_.Count
+            PoweredOnCount          = ($_.Group | Where-Object { $_.PowerState -eq 'PoweredOn' }).Count
+            TemplateCount           = ($_.Group | Where-Object { $_.IsTemplate }).Count
+            LiveDependencyVMCount   = ($_.Group | Where-Object { $_.LiveDependencyCount -gt 0 }).Count
+            LiveDependencyIndicatorCount = ($_.Group | Measure-Object -Property LiveDependencyCount -Sum).Sum
+            CandidateStatus         = if (($_.Group | Where-Object { $_.LiveDependencyCount -gt 0 }).Count -eq 0) { 'NoLiveDependencies' } else { 'InUse' }
+        }
+    } |
+    Sort-Object VMCount -Descending
+
+$unusedTemplateSourceRows =
+    $templateUsageSummary |
+    Where-Object { $_.LiveDependencyVMCount -eq 0 } |
+    Sort-Object FolderPath
 
 $otherFolderSummary =
     $vmIndex |
@@ -516,22 +834,87 @@ if ($LinkedToTemplateOutputFile) {
         New-Item -ItemType Directory -Path $linkedDir -Force | Out-Null
     }
 
-    $linkedToTemplateRows | Export-Csv -Path $LinkedToTemplateOutputFile -NoTypeInformation -Encoding UTF8
+    $templateLinkedVmRows | Export-Csv -Path $LinkedToTemplateOutputFile -NoTypeInformation -Encoding UTF8
     Write-Host "Linked-to-template report exported: $LinkedToTemplateOutputFile" -ForegroundColor Green
+}
+
+if ($TemplateUsageSummaryFile) {
+    $usageDir = Split-Path -Parent $TemplateUsageSummaryFile
+    if ($usageDir -and -not (Test-Path $usageDir)) {
+        New-Item -ItemType Directory -Path $usageDir -Force | Out-Null
+    }
+
+    $templateUsageSummary | Export-Csv -Path $TemplateUsageSummaryFile -NoTypeInformation -Encoding UTF8
+    Write-Host "Template usage summary exported: $TemplateUsageSummaryFile" -ForegroundColor Green
+}
+
+if ($UnusedTemplateOutputFile) {
+    $unusedDir = Split-Path -Parent $UnusedTemplateOutputFile
+    if ($unusedDir -and -not (Test-Path $unusedDir)) {
+        New-Item -ItemType Directory -Path $unusedDir -Force | Out-Null
+    }
+
+    $unusedTemplateSourceRows | Export-Csv -Path $UnusedTemplateOutputFile -NoTypeInformation -Encoding UTF8
+    Write-Host "Unused template-source candidates exported: $UnusedTemplateOutputFile" -ForegroundColor Green
+}
+
+if ($TemplateDependentVmOutputFile) {
+    $depDir = Split-Path -Parent $TemplateDependentVmOutputFile
+    if ($depDir -and -not (Test-Path $depDir)) {
+        New-Item -ItemType Directory -Path $depDir -Force | Out-Null
+    }
+
+    $templateDependentVmRows | Export-Csv -Path $TemplateDependentVmOutputFile -NoTypeInformation -Encoding UTF8
+    Write-Host "Template-dependent VM report exported: $TemplateDependentVmOutputFile" -ForegroundColor Green
+}
+
+$effectiveTemplateNoChildVmOutputFile = $TemplateNoChildVmOutputFile
+if (-not $effectiveTemplateNoChildVmOutputFile -and $TemplateDependentVmOutputFile) {
+    $depDir = Split-Path -Parent $TemplateDependentVmOutputFile
+    $depFileName = [System.IO.Path]::GetFileNameWithoutExtension($TemplateDependentVmOutputFile)
+    $depFileExt = [System.IO.Path]::GetExtension($TemplateDependentVmOutputFile)
+    if (-not $depFileExt) {
+        $depFileExt = '.csv'
+    }
+
+    $autoNoChildFileName = "{0}-no-child-vms{1}" -f $depFileName, $depFileExt
+    $effectiveTemplateNoChildVmOutputFile = if ($depDir) {
+        Join-Path -Path $depDir -ChildPath $autoNoChildFileName
+    }
+    else {
+        $autoNoChildFileName
+    }
+}
+
+if ($effectiveTemplateNoChildVmOutputFile) {
+    $noChildDir = Split-Path -Parent $effectiveTemplateNoChildVmOutputFile
+    if ($noChildDir -and -not (Test-Path $noChildDir)) {
+        New-Item -ItemType Directory -Path $noChildDir -Force | Out-Null
+    }
+
+    $templateScopeNoChildVmRows | Export-Csv -Path $effectiveTemplateNoChildVmOutputFile -NoTypeInformation -Encoding UTF8
+    Write-Host "Template-scope no-child VM report exported: $effectiveTemplateNoChildVmOutputFile" -ForegroundColor Green
 }
 
 Write-Host "`n=== Template Folder VM Report ===" -ForegroundColor Cyan
 Write-Host "  Template scope paths : $($templateRootPaths.Count)" -ForegroundColor White
-Write-Host "  VMs in scope         : $($templateDetails.Count)" -ForegroundColor White
-Write-Host "  Marked as templates  : $(($templateDetails | Where-Object { $_.IsTemplate }).Count)" -ForegroundColor White
-Write-Host "  Powered on           : $(($templateDetails | Where-Object { $_.PowerState -eq 'PoweredOn' }).Count)" -ForegroundColor White
-Write-Host "  Source mapped        : $(($allVMDetails | Where-Object { $_.SourceName -ne 'Unknown' }).Count)" -ForegroundColor White
+Write-Host "  Objects in scope     : $($templateDetails.Count)" -ForegroundColor White
+Write-Host "  Templates in scope   : $(($templateDetails | Where-Object { $_.ObjectType -eq 'Template' }).Count)" -ForegroundColor White
+Write-Host "  VMs in scope         : $(($templateDetails | Where-Object { $_.ObjectType -eq 'VM' }).Count)" -ForegroundColor White
+Write-Host "  Powered-on VMs       : $(($templateDetails | Where-Object { $_.ObjectType -eq 'VM' -and $_.PowerState -eq 'PoweredOn' }).Count)" -ForegroundColor White
+Write-Host "  Template-scope VMs   : $($templateScopeVMDetails.Count)" -ForegroundColor White
+Write-Host "  Template-linked VMs  : $($templateLinkedVmRows.Count)" -ForegroundColor White
+Write-Host "  Live dependencies    : $(($templateScopeVMDetails | Where-Object { $_.LiveDependencyCount -gt 0 }).Count)" -ForegroundColor White
 Write-Host "  Linked-disk hint     : $(($allVMDetails | Where-Object { $_.HasLinkedDiskHint }).Count)" -ForegroundColor White
-Write-Host "  Linked to templates  : $($linkedToTemplateRows.Count)" -ForegroundColor White
+Write-Host "  In-scope dependencies: $($linkedToTemplateRows.Count)" -ForegroundColor White
+Write-Host "  In-use folders       : $(($templateUsageSummary | Where-Object { $_.CandidateStatus -eq 'InUse' }).Count)" -ForegroundColor White
+Write-Host "  Unused candidates    : $($unusedTemplateSourceRows.Count)" -ForegroundColor White
+Write-Host "  Dependent VMs        : $(@($templateDependentVmRows).Count)" -ForegroundColor White
+Write-Host "  No-child VMs         : $(@($templateScopeNoChildVmRows).Count)" -ForegroundColor White
 
 if ($templateDetails.Count -gt 0) {
-    Write-Host "`nTemplate-scope VM names:" -ForegroundColor Yellow
-    $templateDetails | Select-Object VMName, FolderPath, IsTemplate, PowerState, Cluster, Host | Format-Table -AutoSize
+    Write-Host "`nTemplate-scope objects:" -ForegroundColor Yellow
+    $templateDetails | Select-Object Name, ObjectType, FolderPath, IsTemplate, PowerState, Cluster, Host | Format-Table -AutoSize
 }
 
 Write-Host "`n=== Other Folder Usage Summary (Top 25 by VM count) ===" -ForegroundColor Cyan
@@ -544,7 +927,7 @@ else {
 
 Write-Host "`n=== Template Usage Comparison (Top 50 running non-template VMs) ===" -ForegroundColor Cyan
 $comparisonRows = $allVMDetails |
-    Where-Object { -not $_.InTemplateScope -and -not $_.IsTemplate } |
+    Where-Object { -not $_.InTemplateScope -and -not $_.IsTemplate -and $_.PowerState -eq 'PoweredOn' } |
     Sort-Object VMName
 
 if ($comparisonRows.Count -eq 0) {
@@ -552,16 +935,67 @@ if ($comparisonRows.Count -eq 0) {
 }
 else {
     $comparisonRows |
-        Select-Object -First 50 VMName, FolderPath, PowerState, SourceType, SourceName, LinkedToTemplateScope, LinkedTemplateName, HasLinkedDiskHint, Cluster, Host |
+    Select-Object -First 50 VMName, FolderPath, PowerState, LiveDependencyCount, LiveDependencySummary, LiveSnapshotCount, Cluster, Host |
         Format-Table -AutoSize
 }
 
-Write-Host "`n=== Non-Template VMs Linked To Template Folder (Top 100) ===" -ForegroundColor Cyan
+Write-Host "`n=== Template-Scope VMs With Live Dependencies (Top 100) ===" -ForegroundColor Cyan
 if ($linkedToTemplateRows.Count -eq 0) {
-    Write-Host "No non-template VMs were mapped to template-folder VMs in event history." -ForegroundColor Yellow
+    Write-Host "No template-scope VMs showed live dependency indicators." -ForegroundColor Yellow
 }
 else {
     $linkedToTemplateRows |
-        Select-Object -First 100 VMName, FolderPath, LinkedTemplateName, SourceFoundVia, PowerState, Cluster, Host |
+        Select-Object -First 100 VMName, FolderPath, PowerState, Cluster, Host, LiveDependencySummary |
+        Format-Table -AutoSize
+}
+
+Write-Host "`n=== Template-Linked VM CSV Rows (Top 100) ===" -ForegroundColor Cyan
+if ($templateLinkedVmRows.Count -eq 0) {
+    Write-Host "No template-linked VM rows were identified." -ForegroundColor Yellow
+}
+else {
+    $templateLinkedVmRows |
+    Select-Object -First 100 VMName, FolderPath, IsTemplate, PowerState, Cluster, Host, CreateDate, LiveDependencySummary |
+        Format-Table -AutoSize
+}
+
+Write-Host "`n=== Template Scope Usage Summary (Top 100 by VM count) ===" -ForegroundColor Cyan
+if ($templateUsageSummary.Count -eq 0) {
+    Write-Host "No template-scope folders were found." -ForegroundColor Yellow
+}
+else {
+    $templateUsageSummary |
+        Sort-Object VMCount -Descending |
+        Select-Object -First 100 FolderPath, VMCount, PoweredOnCount, TemplateCount, LiveDependencyVMCount, LiveDependencyIndicatorCount, CandidateStatus |
+        Format-Table -AutoSize
+}
+
+Write-Host "`n=== Template-Scope Folders Without Live Dependencies ===" -ForegroundColor Cyan
+if ($unusedTemplateSourceRows.Count -eq 0) {
+    Write-Host "No template-scope folders without live dependencies were identified." -ForegroundColor Green
+}
+else {
+    $unusedTemplateSourceRows |
+        Select-Object -First 100 FolderPath, VMCount, PoweredOnCount, TemplateCount, LiveDependencyVMCount, LiveDependencyIndicatorCount |
+        Format-Table -AutoSize
+}
+
+Write-Host "`n=== VMs Dependent On Template-Scope VMs (Top 100) ===" -ForegroundColor Cyan
+if (@($templateDependentVmRows).Count -eq 0) {
+    Write-Host "No linked-disk parent dependencies were found from template-scope VMs." -ForegroundColor Yellow
+}
+else {
+    $templateDependentVmRows |
+    Select-Object -First 100 ParentTemplateScopeVMName, ParentTemplateScopeFolderPath, ParentVMCreateDate, ChildVMName, ChildVMFolderPath, ChildVMCreateDate, ChildCluster, ChildHost, DependencyType |
+        Format-Table -AutoSize
+}
+
+Write-Host "`n=== Template-Scope VMs Without Child VMs (Top 100) ===" -ForegroundColor Cyan
+if (@($templateScopeNoChildVmRows).Count -eq 0) {
+    Write-Host "No template-scope VMs without child VMs were found." -ForegroundColor Yellow
+}
+else {
+    $templateScopeNoChildVmRows |
+        Select-Object -First 100 TemplateScopeVMName, TemplateScopeFolderPath, TemplateScopeVMCreateDate, IsTemplate, PowerState, Cluster, Host, ChildVMCount |
         Format-Table -AutoSize
 }
