@@ -11,7 +11,8 @@
     Supports DryRun mode.
 
 .PARAMETER SourceFolder
-    Required. The vSphere folder path containing the VMs to clone (e.g. "CyberRange\Exercise01").
+    Optional. The vSphere folder / network containing the VMs to clone (e.g. "CL1", "CL5", "IRDev").
+    If omitted, the script lists available VM folders after connecting and prompts.
 
 .PARAMETER TargetFolder
     Optional. The vSphere folder path where clones will be placed. Default: "Templates".
@@ -82,6 +83,10 @@
     Optional. Path to export the results as CSV.
 
 .EXAMPLE
+    .\Copy-VMsToTemplates.ps1 -DryRun
+    Connect, pick a source network / folder from the list, then preview clones.
+
+.EXAMPLE
     .\Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -DryRun
     Preview which VMs would be cloned to templates without making changes.
 
@@ -116,7 +121,7 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$SourceFolder,
 
     [Parameter(Mandatory=$false)]
@@ -214,19 +219,23 @@ else {
     }
 }
 
-# --- Resolve source folder ---
-# Find the specific VM folder object based on the provided path string
-$srcFolder = Get-Folder -Name ($SourceFolder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-    Where-Object { $_.Type -eq 'VM' } |
-    Where-Object { ($_.ToString()) -match ($SourceFolder -replace '\\', '.*') } |
-    Select-Object -First 1
-
-# Fallback: simple name match if the full path match fails
-if (-not $srcFolder) {
-    $srcFolder = Get-Folder -Name ($SourceFolder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } |
-        Select-Object -First 1
+# --- Resolve source folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
 }
+. $scopeHelper
+
+try {
+    $folderScope = Resolve-VIFolderScope -FolderName $SourceFolder
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+$SourceFolder = $folderScope.Name
+$srcFolder = $folderScope.Folder
 
 if (-not $srcFolder) {
     Write-Error "Source folder '$SourceFolder' not found."

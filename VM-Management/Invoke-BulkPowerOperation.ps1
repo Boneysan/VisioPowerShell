@@ -9,7 +9,8 @@
     restart in addition to hard power operations. Reports per-VM status.
 
 .PARAMETER Folder
-    Required. The vSphere folder path containing the target VMs (e.g. "CyberRange\Exercise01").
+    Optional. The vSphere folder / network containing the target VMs (e.g. "CL1", "CL5", "IRDev").
+    If omitted, the script lists available VM folders after connecting and prompts.
 
 .PARAMETER Action
     Required. The power action to perform on each VM.
@@ -36,6 +37,10 @@
 
 .PARAMETER OutputFile
     Optional. Path to export the results as CSV.
+
+.EXAMPLE
+    .\Invoke-BulkPowerOperation.ps1 -Action PowerOn -DryRun
+    Connect, pick a network / folder from the list, then preview the power operation.
 
 .EXAMPLE
     .\Invoke-BulkPowerOperation.ps1 -Folder "CyberRange\Exercise01" -Action PowerOn -DryRun
@@ -68,7 +73,7 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$Folder,
 
     [Parameter(Mandatory=$true)]
@@ -111,15 +116,23 @@ else {
     }
 }
 
-# --- Resolve folder ---
-$targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-    Where-Object { $_.Type -eq 'VM' } |
-    Select-Object -First 1
-
-if (-not $targetFolder) {
-    Write-Error "Folder '$Folder' not found."
+# --- Resolve folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
     exit 1
 }
+. $scopeHelper
+
+try {
+    $folderScope = Resolve-VIFolderScope -FolderName $Folder
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+$Folder = $folderScope.Name
+$targetFolder = $folderScope.Folder
 
 # --- Get VMs ---
 $vms = if ($IncludeSubfolders) {

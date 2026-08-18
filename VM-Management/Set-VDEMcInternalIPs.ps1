@@ -23,12 +23,12 @@
     vCenter server address. Defaults to c1r1r12-vcsa-01.texnet1.net.
 
 .PARAMETER EventName
-    Event name suffix appended to VM names. Defaults to CLDT2.
+    Event name suffix appended to VM names. If omitted, uses the selected NetworkName.
 
 .PARAMETER NetworkName
     vSphere network/portgroup name to target (e.g. IQT-CL-DT2). Only VMs with a NIC
     connected to this network will be processed. Supports wildcards (e.g. IQT-CL-*).
-    If not provided, the script will prompt for it.
+    If not provided, the script lists available port groups after connecting and prompts.
 
 .PARAMETER OutputFile
     Optional. Path to export results as CSV.
@@ -67,25 +67,12 @@
 
 param(
     [string]$vCenter     = "c1r1r12-vcsa-01.texnet1.net",
-    [string]$EventName   = "CLDT2",
+    [string]$EventName,
     [string]$NetworkName,
     [string]$OutputFile
 )
 
-if (-not $NetworkName) {
-    $NetworkName = Read-Host "Enter the vSphere network/portgroup name to target (e.g. IQT-CDO2-CL7)"
-    if (-not $NetworkName) {
-        Write-Error "NetworkName is required."
-        exit 1
-    }
-}
-
-# EventName drives the VM name suffix (e.g. VDE-STU01-1-<EventName>).
-# Default to NetworkName so that -NetworkName "IQT-CDO2-CL7" automatically
-# targets VMs named VDE-STU01-1-IQT-CDO2-CL7 without needing -EventName.
-if (-not $PSBoundParameters.ContainsKey('EventName')) {
-    $EventName = $NetworkName
-}
+# NetworkName and EventName are resolved after the vCenter connection.
 
 # -- VM name -> last octet for 10.20.0.x --
 # Range starts at .100 to avoid Manticore infrastructure:
@@ -117,6 +104,28 @@ if (-not $global:DefaultVIServers -or $global:DefaultVIServers.Count -eq 0) {
         Write-Error "Failed to connect to ${vCenter}: $($_.Exception.Message)"
         exit 1
     }
+}
+
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+try {
+    $NetworkName = Resolve-VINetworkScope -NetworkName $NetworkName
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+
+# EventName drives the VM name suffix (e.g. VDE-STU01-1-<EventName>).
+# Default to NetworkName so that -NetworkName "IQT-CDO2-CL7" automatically
+# targets VMs named VDE-STU01-1-IQT-CDO2-CL7 without needing -EventName.
+if (-not $PSBoundParameters.ContainsKey('EventName')) {
+    $EventName = $NetworkName
 }
 
 $GuestCred = Get-Credential -Message "Guest OS credentials (local admin on VDE-* VMs)"

@@ -14,8 +14,11 @@
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
 .PARAMETER FolderPath
-    Optional. The path to the VM folder to analyze. If not specified, analyzes all VMs.
-    Examples: "Production", "Development/WebServers", "VDI/Users"
+    Optional. The VM folder / network to analyze (e.g. "CL1", "CL5", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to analyze the entire inventory.
+
+.PARAMETER AllFolders
+    Optional switch. Analyze all VMs without prompting.
 
 .PARAMETER OutputFile
     Required. Path to export results as CSV.
@@ -28,7 +31,7 @@
 
 .EXAMPLE
     .\Get-VMLifecycle.ps1 -OutputFile "vm-lifecycle.csv"
-    Exports lifecycle data for all VMs to CSV.
+    Connect, pick a network / folder (or All), then export lifecycle data.
 
 .EXAMPLE
     .\Get-VMLifecycle.ps1 -FolderPath "Production" -OutputFile "production-vms.csv"
@@ -100,6 +103,9 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]$FolderPath,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
     
     [Parameter(Mandatory=$true)]
     [string]$OutputFile,
@@ -131,28 +137,30 @@ else {
     }
 }
 
-# Get VMs based on folder path or all VMs
-if ($FolderPath) {
-    Write-Host "Looking for folder: $FolderPath..." -ForegroundColor Cyan
-    
-    # Trim any whitespace from folder path
-    $FolderPath = $FolderPath.Trim()
-    
-    # Find the folder
-    $folder = Get-Folder -Name $FolderPath -ErrorAction SilentlyContinue | Where-Object { $_.Type -eq 'VM' }
-    
-    if (-not $folder) {
-        Write-Error "Folder '$FolderPath' not found. Please check the folder name and try again."
-        Write-Host "`nAvailable VM folders:" -ForegroundColor Yellow
-        Get-Folder -Type VM | Select-Object Name, Parent | Format-Table -AutoSize
+# Resolve folder / network (prompt unless -FolderPath or -AllFolders was given)
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$folder = $null
+if (-not $AllFolders) {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $FolderPath -AllowAll
+    }
+    catch {
+        Write-Error $_
         exit 1
     }
-    
-    if ($folder -is [array]) {
-        Write-Warning "Multiple folders found with name '$FolderPath'. Using first match: $($folder[0].Name) in $($folder[0].Parent.Name)"
-        $folder = $folder[0]
+    if (-not $folderScope.All) {
+        $FolderPath = $folderScope.Name
+        $folder = $folderScope.Folder
     }
-    
+}
+
+if ($folder) {
     Write-Host "Found folder: $($folder.Name)" -ForegroundColor Green
     Write-Host "Retrieving VMs from folder..." -ForegroundColor Cyan
     $vms = Get-VM -Location $folder

@@ -11,12 +11,14 @@
     it with the staged file, and rebooting the router via Invoke-VMScript.
 
 .PARAMETER VMName
-    Required. The name of the pfSense VM in vCenter (e.g. "PFSENSE-R1-CCH").
+    Optional. The name of the pfSense VM in vCenter (e.g. "PFSENSE-R1-CCH").
+    If omitted, the script lists VMs in the selected folder and prompts.
 
 .PARAMETER XmlPath
-    Required. The pfSense XML configuration file to push. Can be a filename only
+    Optional. The pfSense XML configuration file to push. Can be a filename only
     (e.g. "CCH-pfSense-r1-defended-dcw.xml") or a full path. If only a filename is
-    provided it is resolved against -XmlDir.
+    provided it is resolved against -XmlDir. If omitted, XML files in -XmlDir are
+    listed and you pick one.
 
 .PARAMETER XmlDir
     Optional. Directory containing pfSense XML configuration files.
@@ -24,8 +26,8 @@
     Used to resolve -XmlPath when only a filename is provided.
 
 .PARAMETER Folder
-    Optional. vSphere folder containing the target VM (e.g. "CCH"). Used to scope
-    the VM lookup and avoid ambiguity if the same VM name exists in multiple folders.
+    Optional. vSphere folder / network containing the target VM (e.g. "CL1", "IRDev", "CCH").
+    If omitted, the script lists available VM folders after connecting and prompts.
 
 .PARAMETER GuestStageDir
     Optional. Directory inside the pfSense VM to stage the config file. Defaults to '/tmp'.
@@ -51,6 +53,10 @@
 
 .PARAMETER OutputFile
     Optional. Path to export the result as CSV.
+
+.EXAMPLE
+    .\Invoke-PfSenseConfigPushPowerCLI.ps1
+    Connect, pick a network / folder, pick the pfSense VM, pick an XML file, then stage.
 
 .EXAMPLE
     .\Invoke-PfSenseConfigPushPowerCLI.ps1 -Folder "CCH" -VMName "PFSENSE-R1-CCH" -XmlPath "CCH-pfSense-r1-defended-dcw.xml"
@@ -87,10 +93,10 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$VMName,
 
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$XmlPath,
 
     [Parameter(Mandatory=$false)]
@@ -128,23 +134,6 @@ if (-not (Get-Module -ListAvailable -Name 'VMware.PowerCLI')) {
 }
 Import-Module VMware.PowerCLI -ErrorAction Stop
 
-# Resolve XmlPath against XmlDir if only a filename was provided
-if (-not [System.IO.Path]::IsPathRooted($XmlPath)) {
-    $XmlPath = Join-Path $XmlDir $XmlPath
-}
-
-if (-not (Test-Path -LiteralPath $XmlPath)) {
-    Write-Error "XML config file not found: $XmlPath"
-    exit 1
-}
-
-# --- Guest credentials ---
-# Skip prompt in DryRun — credentials are not used when no changes are made.
-if (-not $DryRun -and -not $GuestCredential) {
-    Write-Host "Enter pfSense guest credentials:" -ForegroundColor Yellow
-    $GuestCredential = Get-Credential -Message "pfSense guest OS credentials for $VMName"
-}
-
 # --- vCenter credentials ---
 if (-not $VCenterCredential) {
     Write-Host "Enter vCenter credentials:" -ForegroundColor Yellow
@@ -161,6 +150,110 @@ try {
 catch {
     Write-Error "Failed to connect to vCenter: $_"
     exit 1
+}
+
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+# Folder / network: use -Folder when given, otherwise list folders and ask.
+try {
+    $folderScope = Resolve-VIFolderScope -FolderName $Folder -AllowAll
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+
+$targetFolder = $null
+if ($folderScope.All) {
+    $Folder = $null
+}
+else {
+    $Folder = $folderScope.Name
+    $targetFolder = $folderScope.Folder
+}
+
+# VM: use -VMName when given, otherwise list VMs in the selected folder and ask.
+if (-not $VMName) {
+    $candidates = if ($targetFolder) {
+        @(Get-VM -Location $targetFolder -ErrorAction SilentlyContinue | Sort-Object Name)
+    }
+    else {
+        @(Get-VM -ErrorAction SilentlyContinue | Sort-Object Name)
+    }
+
+    $preferred = @($candidates | Where-Object { $_.Name -match '(?i)pfsense|fwall|^fw-' })
+    $vmChoices = if ($preferred.Count -gt 0) { $preferred } else { $candidates }
+
+    if ($vmChoices.Count -eq 0) {
+        $VMName = Read-Host "No VMs found in scope. Enter the pfSense VM name"
+    }
+    else {
+        $labelHint = if ($preferred.Count -gt 0) { 'pfSense-like VMs' } else { 'VMs' }
+        Write-Host ""
+        Write-Host "Available ${labelHint}:" -ForegroundColor Yellow
+        $pickedVm = Select-VIListItem -Items $vmChoices -Prompt "Select a pfSense VM (number or name)" -Label {
+            param($vm) "$($vm.Name)  [$($vm.PowerState)]"
+        }
+        if ($pickedVm) {
+            $VMName = $pickedVm.Name
+        }
+        else {
+            $VMName = Read-Host "Or type the pfSense VM name"
+        }
+    }
+
+    if (-not $VMName) {
+        Write-Error "VMName is required."
+        exit 1
+    }
+}
+
+# XML: use -XmlPath when given, otherwise list XML files in XmlDir and ask.
+if (-not $XmlPath) {
+    $xmlFiles = @(Get-ChildItem -Path $XmlDir -Filter '*.xml' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($xmlFiles.Count -eq 0) {
+        $XmlPath = Read-Host "No XML files in '$XmlDir'. Enter the full path to the pfSense XML file"
+    }
+    else {
+        Write-Host ""
+        Write-Host "Available XML files in ${XmlDir}:" -ForegroundColor Yellow
+        $pickedXml = Select-VIListItem -Items $xmlFiles -Prompt "Select an XML config (number or name)" -Label {
+            param($f) $f.Name
+        }
+        if ($pickedXml) {
+            $XmlPath = $pickedXml.FullName
+        }
+        else {
+            $XmlPath = Read-Host "Or type an XML filename or full path"
+        }
+    }
+
+    if (-not $XmlPath) {
+        Write-Error "XmlPath is required."
+        exit 1
+    }
+}
+
+# Resolve XmlPath against XmlDir if only a filename was provided
+if (-not [System.IO.Path]::IsPathRooted($XmlPath)) {
+    $XmlPath = Join-Path $XmlDir $XmlPath
+}
+
+if (-not (Test-Path -LiteralPath $XmlPath)) {
+    Write-Error "XML config file not found: $XmlPath"
+    exit 1
+}
+
+# --- Guest credentials ---
+# Skip prompt in DryRun — credentials are not used when no changes are made.
+if (-not $DryRun -and -not $GuestCredential) {
+    Write-Host "Enter pfSense guest credentials:" -ForegroundColor Yellow
+    $GuestCredential = Get-Credential -Message "pfSense guest OS credentials for $VMName"
 }
 
 $xmlLeaf   = Split-Path -Path $XmlPath -Leaf

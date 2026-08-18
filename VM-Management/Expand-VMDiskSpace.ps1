@@ -23,8 +23,11 @@
     Optional. Which virtual disk to expand (1 = first disk, 2 = second, etc.). Default: 1.
 
 .PARAMETER Folder
-    Optional. Limit scope to VMs inside this vSphere folder path.
-    If omitted, searches all VMs in the vCenter.
+    Optional. Limit scope to VMs inside this vSphere folder / network (e.g. "CL1", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to search the entire inventory.
+
+.PARAMETER AllFolders
+    Optional switch. Search all VM folders without prompting.
 
 .PARAMETER PowerOnAfter
     Optional switch (default: enabled). Power VMs back on after the disk is expanded.
@@ -49,7 +52,7 @@
 
 .EXAMPLE
     .\Expand-VMDiskSpace.ps1 -VMNamePattern "Office-WKS3*" -ExpandGB 10 -DryRun
-    Preview which VMs would be expanded without making any changes.
+    Connect, pick a network / folder (or All), then preview expansions.
 
 .EXAMPLE
     .\Expand-VMDiskSpace.ps1 -VMNamePattern "Office-WKS3*" -ExpandGB 10 -OutputFile "disk-expansion.csv"
@@ -95,6 +98,9 @@ param(
     [string]$Folder,
 
     [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
+
+    [Parameter(Mandatory=$false)]
     [bool]$PowerOnAfter = $true,
 
     [Parameter(Mandatory=$false)]
@@ -133,11 +139,37 @@ else {
     }
 }
 
+# --- Resolve folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$targetFolder = $null
+if ($AllFolders) {
+    $Folder = $null
+}
+else {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if ($folderScope.All) {
+        $Folder = $null
+    }
+    else {
+        $Folder = $folderScope.Name
+        $targetFolder = $folderScope.Folder
+    }
+}
+
 # --- Discover matching VMs ---
-if ($Folder) {
-    $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-    if (-not $targetFolder) { Write-Error "Folder '$Folder' not found."; exit 1 }
+if ($targetFolder) {
     $vms = Get-VM -Location $targetFolder -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $VMNamePattern }
 }
 else {

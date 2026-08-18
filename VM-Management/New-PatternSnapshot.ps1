@@ -17,8 +17,13 @@
     Required. Name of the snapshot to create on each matched VM.
 
 .PARAMETER Folder
-    Optional. Limit matching to a specific vSphere VM folder path
-    (for example "CyberRange\Templates").
+    Optional. Limit matching to a specific vSphere VM folder / network
+    (for example "CL1", "IRDev"). If omitted, the script lists folders and prompts.
+    Choose All to search the entire inventory.
+
+.PARAMETER AllFolders
+    Optional switch. Search all VM folders without prompting. Use this for
+    unattended runs that should match the pattern across every classroom.
 
 .PARAMETER IncludeSubfolders
     Optional switch. Include VMs in subfolders when -Folder is used.
@@ -48,6 +53,7 @@
 
 .EXAMPLE
     .\New-PatternSnapshot.ps1 -VMNamePattern "-8May26" -SnapshotName "Exam-Baseline"
+    Connect, pick a network / folder (or All), then snapshot matching VMs.
 
 .EXAMPLE
     .\New-PatternSnapshot.ps1 -VMNamePattern "*-8May26" -SnapshotName "Exam-Baseline" -Folder "Templates" -IncludeSubfolders
@@ -77,6 +83,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$Folder,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
 
     [Parameter(Mandatory=$false)]
     [switch]$IncludeSubfolders,
@@ -132,26 +141,38 @@ else {
     }
 }
 
-# --- VM Discovery ---
-$vms = @()
+# --- Resolve folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
 $targetFolder = $null
-if ($Folder) {
-    $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } |
-        Where-Object { ($_.ToString()) -match ($Folder -replace '\\', '.*') } |
-        Select-Object -First 1
-
-    if (-not $targetFolder) {
-        $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-            Where-Object { $_.Type -eq 'VM' } |
-            Select-Object -First 1
+if ($AllFolders) {
+    $Folder = $null
+}
+else {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder -AllowAll
     }
-
-    if (-not $targetFolder) {
-        Write-Error "Folder '$Folder' not found."
+    catch {
+        Write-Error $_
         exit 1
     }
+    if ($folderScope.All) {
+        $Folder = $null
+    }
+    else {
+        $Folder = $folderScope.Name
+        $targetFolder = $folderScope.Folder
+    }
+}
 
+# --- VM Discovery ---
+$vms = @()
+if ($targetFolder) {
     $folderVMs = if ($IncludeSubfolders) {
         Get-VM -Location $targetFolder -ErrorAction SilentlyContinue
     }

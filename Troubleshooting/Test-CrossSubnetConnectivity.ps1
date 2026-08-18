@@ -13,7 +13,8 @@
     identifies broken routing, missing firewall rules, or VLAN isolation problems.
 
 .PARAMETER Folder
-    Required. vSphere folder containing the cyber range VMs.
+    Optional. vSphere folder / network containing the cyber range VMs (e.g. "CL1", "IRDev").
+    If omitted, the script lists available VM folders after connecting and prompts.
 
 .PARAMETER Ports
     Optional. TCP ports to test between subnets. Default: 22 (SSH).
@@ -60,7 +61,7 @@
 #>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$Folder,
 
     [Parameter(Mandatory=$false)]
@@ -103,10 +104,23 @@ else {
     }
 }
 
-# --- Resolve folder and VMs ---
-$targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-    Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-if (-not $targetFolder) { Write-Error "Folder '$Folder' not found."; exit 1 }
+# --- Resolve folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+try {
+    $folderScope = Resolve-VIFolderScope -FolderName $Folder
+}
+catch {
+    Write-Error $_
+    exit 1
+}
+$Folder = $folderScope.Name
+$targetFolder = $folderScope.Folder
 
 $allVMs = if ($IncludeSubfolders) {
     Get-VM -Location $targetFolder -ErrorAction SilentlyContinue

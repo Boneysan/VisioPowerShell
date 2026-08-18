@@ -2,6 +2,8 @@
 
 A comprehensive PowerShell toolkit for VMware vSphere — covering infrastructure diagramming, operational reporting, security compliance, capacity planning, storage management, networking, patch management, cluster health monitoring, VM lifecycle management, troubleshooting diagnostics, and Power BI dashboard exports. All scripts use VMware PowerCLI and require no additional dependencies beyond what is listed per script.
 
+Folder- and network-scoped scripts do not assume a classroom such as CL1, CL5, or IRDev. After connecting to vCenter they list available VM folders (or port groups) and ask which one to use. Pass `-Folder` / `-FolderName` / `-NetworkName` to skip the prompt, or `-AllFolders` on inventory-style scripts to scan the entire vCenter.
+
 ## Overview
 
 **85 scripts across 17 management domains**, organized to provide end-to-end vSphere operational visibility:
@@ -36,6 +38,8 @@ A comprehensive PowerShell toolkit for VMware vSphere — covering infrastructur
 ```
 VisioPowerShell/
 ├── README.md
+├── Common/
+│   └── Resolve-InventoryScope.ps1
 ├── Alarm-Management/
 │   └── Get-AlarmDefinitionAudit.ps1
 ├── Backup-DR/

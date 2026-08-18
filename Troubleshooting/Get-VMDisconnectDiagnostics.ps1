@@ -23,8 +23,11 @@
     making it easy to spot which VMs, hosts, or datastores are involved across classrooms.
 
 .PARAMETER Folder
-    Optional. vSphere folder to scope the analysis (e.g. "Classrooms\Office-WKS3").
-    If omitted, analyzes all VMs in the vCenter.
+    Optional. vSphere folder / network to scope the analysis (e.g. "CL1", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to analyze the entire inventory.
+
+.PARAMETER AllFolders
+    Optional switch. Analyze all VMs without prompting.
 
 .PARAMETER VMNamePattern
     Optional. Wildcard filter to limit analysis to matching VM names (e.g. "Office-WKS3*").
@@ -76,6 +79,9 @@ param(
     [string]$Folder,
 
     [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
+
+    [Parameter(Mandatory=$false)]
     [string]$VMNamePattern,
 
     [Parameter(Mandatory=$false)]
@@ -114,12 +120,32 @@ else {
     }
 }
 
+# --- Resolve folder / network ---
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$targetFolder = $null
+if (-not $AllFolders) {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if (-not $folderScope.All) {
+        $Folder = $folderScope.Name
+        $targetFolder = $folderScope.Folder
+    }
+}
+
 # --- Resolve VMs ---
 $allVMs = @()
-if ($Folder) {
-    $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-    if (-not $targetFolder) { Write-Error "Folder '$Folder' not found."; exit 1 }
+if ($targetFolder) {
     $allVMs = Get-VM -Location $targetFolder -ErrorAction SilentlyContinue
 }
 else {

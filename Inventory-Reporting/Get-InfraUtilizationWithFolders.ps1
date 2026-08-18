@@ -10,6 +10,14 @@
 .PARAMETER vCenter
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
+.PARAMETER FolderName
+    Optional. Limit VM results to this folder / network (e.g. "CL1", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All for the entire inventory.
+    Host utilization is always collected for the whole vCenter.
+
+.PARAMETER AllFolders
+    Optional switch. Include VMs from all folders without prompting.
+
 .PARAMETER IncludePoweredOff
     Optional. Include powered-off VMs in the results. Default: Only powered-on VMs.
 
@@ -36,7 +44,7 @@
 
 .EXAMPLE
     .\Get-InfraUtilizationWithFolders.ps1
-    Shows host and VM utilization in console; VMs include folder paths.
+    Connect, pick a network / folder (or All) for VMs, then show utilization.
 
 .EXAMPLE
     .\Get-InfraUtilizationWithFolders.ps1 -OutputFolder .
@@ -67,6 +75,12 @@
 param(
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
+
+    [Parameter(Mandatory=$false)]
+    [string]$FolderName,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
 
     [Parameter(Mandatory=$false)]
     [switch]$IncludePoweredOff,
@@ -130,6 +144,28 @@ else {
             Write-Error "Failed to connect to vCenter: $_"
             exit 1
         }
+    }
+}
+
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$scopeFolder = $null
+if (-not $AllFolders) {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $FolderName -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if (-not $folderScope.All) {
+        $FolderName = $folderScope.Name
+        $scopeFolder = $folderScope.Folder
     }
 }
 
@@ -231,6 +267,11 @@ if ($IncludeStats) {
 }
 
 $vmViews = Get-View -ViewType VirtualMachine -ErrorAction SilentlyContinue
+if ($scopeFolder) {
+    $scopedMorefs = @(Get-VM -Location $scopeFolder -ErrorAction SilentlyContinue | ForEach-Object { $_.ExtensionData.MoRef.Value })
+    $vmViews = @($vmViews | Where-Object { $scopedMorefs -contains $_.MoRef.Value })
+    Write-Host "  Scoped to folder '$FolderName' ($($vmViews.Count) VM view(s))" -ForegroundColor White
+}
 if (-not $IncludePoweredOff) {
     $vmViews = $vmViews | Where-Object { $_.Runtime.PowerState -eq 'poweredOn' }
 }

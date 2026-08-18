@@ -12,7 +12,12 @@
     Optional. Scope audit to VMs in this cluster.
 
 .PARAMETER FolderName
-    Optional. Scope audit to VMs in this vSphere folder.
+    Optional. Scope audit to VMs in this folder / network (e.g. "CL1", "IRDev").
+    If omitted (and -ClusterName is also omitted), the script lists folders and prompts.
+    Choose All to audit the entire inventory.
+
+.PARAMETER AllFolders
+    Optional switch. Audit all VMs without prompting.
 
 .PARAMETER MaxAgeDays
     Snapshots older than this many days are flagged. Default: 7
@@ -56,6 +61,9 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$FolderName,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
 
     [Parameter(Mandatory=$false)]
     [int]$MaxAgeDays = 7,
@@ -108,14 +116,35 @@ if ($ClusterName) {
     if (-not $cluster) { Write-Error "Cluster '$ClusterName' not found."; exit 1 }
     $vms = Get-VM -Location $cluster
 }
-elseif ($FolderName) {
-    $folder = Get-Folder -Name $FolderName -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-    if (-not $folder) { Write-Error "Folder '$FolderName' not found."; exit 1 }
-    $vms = Get-VM -Location $folder
-}
 else {
-    $vms = Get-VM
+    $scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+    if (-not (Test-Path -LiteralPath $scopeHelper)) {
+        Write-Error "Required helper not found: $scopeHelper"
+        exit 1
+    }
+    . $scopeHelper
+
+    $folder = $null
+    if (-not $AllFolders) {
+        try {
+            $folderScope = Resolve-VIFolderScope -FolderName $FolderName -AllowAll
+        }
+        catch {
+            Write-Error $_
+            exit 1
+        }
+        if (-not $folderScope.All) {
+            $FolderName = $folderScope.Name
+            $folder = $folderScope.Folder
+        }
+    }
+
+    if ($folder) {
+        $vms = Get-VM -Location $folder
+    }
+    else {
+        $vms = Get-VM
+    }
 }
 
 $vmList = @($vms)

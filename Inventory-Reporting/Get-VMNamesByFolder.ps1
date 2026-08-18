@@ -10,7 +10,11 @@
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
 .PARAMETER FolderName
-    Optional. Specific folder name to query. If not specified, shows all folders.
+    Optional. Specific folder / network name to query (e.g. "CL1", "CL5", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to show every folder.
+
+.PARAMETER AllFolders
+    Optional switch. Query all VM folders without prompting.
 
 .PARAMETER IncludePoweredOff
     Optional. Include powered-off VMs in the results. Default: Only powered-on VMs.
@@ -23,7 +27,7 @@
 
 .EXAMPLE
     .\Get-VMNamesByFolder.ps1
-    Shows all VM names grouped by folder.
+    Connect, pick a network / folder (or All), then list VM names.
 
 .EXAMPLE
     .\Get-VMNamesByFolder.ps1 -FolderName "Production"
@@ -65,6 +69,9 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]$FolderName,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
     
     [Parameter(Mandatory=$false)]
     [switch]$IncludePoweredOff,
@@ -116,17 +123,32 @@ else {
     }
 }
 
-# Get folders
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
 Write-Host "Retrieving VM folders..." -ForegroundColor Cyan
-if ($FolderName) {
-    $folders = Get-Folder -Type VM -Name $FolderName -ErrorAction SilentlyContinue
-    if (-not $folders) {
-        Write-Error "Folder '$FolderName' not found."
-        exit 1
-    }
+if ($AllFolders) {
+    $folders = Get-Folder -Type VM | Sort-Object Name
 }
 else {
-    $folders = Get-Folder -Type VM | Sort-Object Name
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $FolderName -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if ($folderScope.All) {
+        $folders = Get-Folder -Type VM | Sort-Object Name
+    }
+    else {
+        $FolderName = $folderScope.Name
+        $folders = @($folderScope.Folder)
+    }
 }
 
 Write-Host "  Found $($folders.Count) folder(s)" -ForegroundColor White

@@ -13,8 +13,9 @@
     Mutually exclusive with -Folder.
 
 .PARAMETER Folder
-    Optional. vSphere folder path. Retrieves events for all VMs in the folder.
-    Mutually exclusive with -VMName.
+    Optional. vSphere folder / network (e.g. "CL1", "IRDev"). Retrieves events for all VMs
+    in the folder. Mutually exclusive with -VMName. If neither -VMName nor -Folder is
+    given, the script lists folders and prompts.
 
 .PARAMETER HoursBack
     Optional. How many hours of event history to retrieve. Default: 24.
@@ -87,10 +88,7 @@ param(
     [string]$OutputFile
 )
 
-if (-not $VMName -and -not $Folder) {
-    Write-Error "Specify either -VMName or -Folder."
-    exit 1
-}
+# Folder is resolved after connecting when -VMName is not supplied.
 
 # --- Connection ---
 if ($vCenter) {
@@ -120,9 +118,22 @@ if ($VMName) {
     $vms = @($vm)
 }
 else {
-    $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-    if (-not $targetFolder) { Write-Error "Folder '$Folder' not found."; exit 1 }
+    $scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+    if (-not (Test-Path -LiteralPath $scopeHelper)) {
+        Write-Error "Required helper not found: $scopeHelper"
+        exit 1
+    }
+    . $scopeHelper
+
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    $Folder = $folderScope.Name
+    $targetFolder = $folderScope.Folder
 
     $vms = if ($IncludeSubfolders) {
         Get-VM -Location $targetFolder -ErrorAction SilentlyContinue

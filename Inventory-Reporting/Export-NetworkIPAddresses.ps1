@@ -14,13 +14,20 @@
 .PARAMETER vCenter
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
+.PARAMETER FolderName
+    Optional. Limit the export to VMs in this folder / network (e.g. "CL1", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to export every powered-on VM.
+
+.PARAMETER AllFolders
+    Optional switch. Export all powered-on VMs without prompting.
+
 .PARAMETER OutputFile
     Optional. Path and filename for the output CSV file. Default: "network-ip-addresses.csv" in current directory.
     Supports both relative and absolute paths.
 
 .EXAMPLE
     .\Export-NetworkIPAddresses.ps1
-    Uses existing vCenter connection and exports to network-ip-addresses.csv in current directory.
+    Connect, pick a network / folder (or All), then export IP mappings.
 
 .EXAMPLE
     .\Export-NetworkIPAddresses.ps1 -vCenter "vcenter.example.com"
@@ -81,6 +88,12 @@
 param(
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
+
+    [Parameter(Mandatory=$false)]
+    [string]$FolderName,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
     
     [Parameter(Mandatory=$false)]
     [string]$OutputFile = "network-ip-addresses.csv"
@@ -106,10 +119,37 @@ else {
     }
 }
 
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$scopeFolder = $null
+if (-not $AllFolders) {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $FolderName -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if (-not $folderScope.All) {
+        $FolderName = $folderScope.Name
+        $scopeFolder = $folderScope.Folder
+    }
+}
+
 Write-Host "Collecting VM and network data..." -ForegroundColor Cyan
 
-# Get all VMs
-$allVMs = Get-VM | Where-Object { $_.PowerState -eq 'PoweredOn' }
+# Get powered-on VMs in the selected folder (or entire inventory)
+if ($scopeFolder) {
+    $allVMs = Get-VM -Location $scopeFolder | Where-Object { $_.PowerState -eq 'PoweredOn' }
+}
+else {
+    $allVMs = Get-VM | Where-Object { $_.PowerState -eq 'PoweredOn' }
+}
 Write-Host "  Found $($allVMs.Count) powered-on VMs" -ForegroundColor White
 
 # Get all network adapters

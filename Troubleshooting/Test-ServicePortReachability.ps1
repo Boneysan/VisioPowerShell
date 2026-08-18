@@ -43,8 +43,9 @@
     Optional. TCP connection timeout in seconds per test. Default: 3.
 
 .PARAMETER Folder
-    Optional. vSphere folder name. If specified, targets ALL VMs in the folder
-    and tests the specified ports against each. Overrides -TargetVMs.
+    Optional. vSphere folder / network (e.g. "CL1", "IRDev"). If specified, targets ALL
+    VMs in the folder and tests the specified ports against each. Overrides -TargetVMs.
+    If neither -TargetVMs nor -Folder is given, the script lists folders and prompts.
 
 .PARAMETER vCenter
     Optional. The vCenter Server to connect to. If not specified, uses existing connection.
@@ -119,10 +120,7 @@ param(
     [string]$OutputFile
 )
 
-if (-not $TargetVMs -and -not $Folder) {
-    Write-Error "Specify either -TargetVMs or -Folder."
-    exit 1
-}
+# Folder is resolved after connecting when -TargetVMs is not supplied.
 
 if ($SourceVMs -and -not $GuestCredential) {
     Write-Error "-GuestCredential is required when using -SourceVMs (needed for Invoke-VMScript)."
@@ -150,10 +148,24 @@ else {
 }
 
 # --- Resolve targets ---
-if ($Folder) {
-    $targetFolder = Get-Folder -Name ($Folder -split '\\' | Select-Object -Last 1) -ErrorAction SilentlyContinue |
-        Where-Object { $_.Type -eq 'VM' } | Select-Object -First 1
-    if (-not $targetFolder) { Write-Error "Folder '$Folder' not found."; exit 1 }
+# Folder wins over named targets. If neither was passed, prompt for a folder.
+if ($Folder -or -not $TargetVMs) {
+    $scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+    if (-not (Test-Path -LiteralPath $scopeHelper)) {
+        Write-Error "Required helper not found: $scopeHelper"
+        exit 1
+    }
+    . $scopeHelper
+
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    $Folder = $folderScope.Name
+    $targetFolder = $folderScope.Folder
     $targetVMObjects = Get-VM -Location $targetFolder -ErrorAction SilentlyContinue | Where-Object { $_.PowerState -eq 'PoweredOn' }
 }
 else {

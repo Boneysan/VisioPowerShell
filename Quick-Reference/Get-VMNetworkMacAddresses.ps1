@@ -11,7 +11,8 @@
 .PARAMETER NetworkName
     The vSphere network or portgroup name to match. By default this supports
     wildcard matching, so "mc-internal" matches any adapter whose NetworkName
-    contains that value.
+    contains that value. If omitted, the script lists port groups after connecting
+    and prompts.
 
 .PARAMETER ExactMatch
     Match the network name exactly instead of using a wildcard contains match.
@@ -21,6 +22,10 @@
 
 .PARAMETER ExportCsv
     Optional path to export the results as CSV.
+
+.EXAMPLE
+    .\Get-VMNetworkMacAddresses.ps1
+    Connect, pick a network / port group from the list, then list matching MACs.
 
 .EXAMPLE
     .\Get-VMNetworkMacAddresses.ps1 -NetworkName "IQT-CL-DT2"
@@ -47,7 +52,6 @@
 #>
 
 param(
-    [Parameter(Mandatory)]
     [string]$NetworkName,
 
     [switch]$ExactMatch,
@@ -69,6 +73,21 @@ if ($VIServer) {
     if (-not $existingServer) {
         Connect-VIServer -Server $VIServer | Out-Null
     }
+}
+
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+try {
+    $NetworkName = Resolve-VINetworkScope -NetworkName $NetworkName
+}
+catch {
+    Write-Error $_
+    exit 1
 }
 
 $allVMs = Get-VM -ErrorAction Stop

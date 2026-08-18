@@ -13,6 +13,13 @@
 .PARAMETER vCenter
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
+.PARAMETER FolderName
+    Optional. Limit collection to this VM folder / network (e.g. "CL1", "IRDev").
+    If omitted, the script lists folders and prompts. Choose All to scan every folder.
+
+.PARAMETER AllFolders
+    Optional switch. Collect stats from all VM folders without prompting.
+
 .PARAMETER Hours
     Optional. Number of hours to look back for statistics. Default: 1 hour.
     Valid range: 0.25 (15 minutes) to 720 (30 days, depending on vCenter stats settings).
@@ -31,7 +38,7 @@
 
 .EXAMPLE
     .\Get-VMUtilizationByFolder.ps1
-    Shows utilization for all VMs grouped by folder over the last hour.
+    Connect, pick a network / folder (or All), then show last-hour utilization.
 
 .EXAMPLE
     .\Get-VMUtilizationByFolder.ps1 -Hours 24 -OutputFile "vm-stats.csv"
@@ -103,6 +110,12 @@
 param(
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
+
+    [Parameter(Mandatory=$false)]
+    [string]$FolderName,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$AllFolders,
     
     [Parameter(Mandatory=$false)]
     [ValidateRange(0.25, 720)]
@@ -147,9 +160,33 @@ $startTime = $endTime.AddHours(-$Hours)
 
 Write-Host "`nCollecting statistics from $($startTime.ToString('yyyy-MM-dd HH:mm')) to $($endTime.ToString('yyyy-MM-dd HH:mm'))..." -ForegroundColor Cyan
 
-# Get all VM folders
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
 Write-Host "Retrieving VM folders..." -ForegroundColor Cyan
-$folders = Get-Folder -Type VM | Sort-Object Name
+if ($AllFolders) {
+    $folders = Get-Folder -Type VM | Sort-Object Name
+}
+else {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $FolderName -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if ($folderScope.All) {
+        $folders = Get-Folder -Type VM | Sort-Object Name
+    }
+    else {
+        $FolderName = $folderScope.Name
+        $folders = @($folderScope.Folder)
+    }
+}
 
 Write-Host "  Found $($folders.Count) VM folder(s)" -ForegroundColor White
 

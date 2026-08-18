@@ -15,9 +15,9 @@
     Optional. The VMware vCenter Server to connect to. If not specified, uses existing PowerCLI connection.
 
 .PARAMETER FolderPath
-    Required. The path to the VM folder to analyze. Use forward slashes for nested folders.
-    Examples: "Production", "Development/WebServers", "VDI/Users"
-    
+    Optional. The VM folder / network to analyze (e.g. "CL1", "CL5", "IRDev").
+    If omitted, the script lists available VM folders after connecting and prompts.
+
     Note: This is the folder name as shown in vCenter, not the full inventory path.
 
 .PARAMETER Hours
@@ -33,6 +33,10 @@
 
 .PARAMETER IncludePoweredOff
     Optional. Include powered-off VMs in the results. Default: Only powered-on VMs.
+
+.EXAMPLE
+    .\Get-VMUtilization.ps1
+    Connect, pick a network / folder from the list, then show last-hour utilization.
 
 .EXAMPLE
     .\Get-VMUtilization.ps1 -FolderPath "Production"
@@ -110,7 +114,7 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$vCenter = 'c1r1r12-vcsa-01.texnet1.net',
     
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [string]$FolderPath,
     
     [Parameter(Mandatory=$false)]
@@ -148,25 +152,22 @@ else {
     }
 }
 
-Write-Host "Looking for folder: $FolderPath..." -ForegroundColor Cyan
-
-# Trim any whitespace from folder path
-$FolderPath = $FolderPath.Trim()
-
-# Find the folder
-$folder = Get-Folder -Name $FolderPath -ErrorAction SilentlyContinue | Where-Object { $_.Type -eq 'VM' }
-
-if (-not $folder) {
-    Write-Error "Folder '$FolderPath' not found. Please check the folder name and try again."
-    Write-Host "`nAvailable VM folders:" -ForegroundColor Yellow
-    Get-Folder -Type VM | Select-Object Name, Parent | Format-Table -AutoSize
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
     exit 1
 }
+. $scopeHelper
 
-if ($folder -is [array]) {
-    Write-Warning "Multiple folders found with name '$FolderPath'. Using first match: $($folder[0].Name) in $($folder[0].Parent.Name)"
-    $folder = $folder[0]
+try {
+    $folderScope = Resolve-VIFolderScope -FolderName $FolderPath
 }
+catch {
+    Write-Error $_
+    exit 1
+}
+$FolderPath = $folderScope.Name
+$folder = $folderScope.Folder
 
 Write-Host "Found folder: $($folder.Name)" -ForegroundColor Green
 

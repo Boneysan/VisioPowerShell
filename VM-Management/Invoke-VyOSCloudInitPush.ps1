@@ -21,14 +21,14 @@
 
 .PARAMETER Switches
     Optional. One or more switch keys to process (e.g. "VYOS-SW1","VYOS-SW3").
-    Defaults to all five: VYOS-SW1 through VYOS-SW5.
+    If omitted, the script lists the built-in switches and prompts (or All).
     Ignored when -VMName/-YamlFile are used.
 
 .PARAMETER VMName
     Optional. Exact name of a single VyOS VM to target instead of the built-in
     switch map. Must be used together with -YamlFile. If neither -VMName,
-    -YamlFile, nor -Switches is supplied, the script prompts for a VM name and
-    YAML file (press Enter at the VM name prompt to use the built-in map).
+    -YamlFile, nor -Switches is supplied, the script asks whether to use the
+    built-in switch map or a single custom VM.
 
 .PARAMETER YamlFile
     Optional. Cloud-init YAML file for the VM given in -VMName. Accepts a full
@@ -36,9 +36,14 @@
     with -VMName.
 
 .PARAMETER EventName
-    Optional. The Caster/Terraform event name appended to VM names (e.g. "CCH").
-    VM lookup tries "<SwitchKey>-<EventName>" first, then "<SwitchKey>".
-    Defaults to "CCH".
+    Optional. The Caster/Terraform event name appended to VM names
+    (e.g. "CCH", "CL1", "IRDev"). VM lookup tries "<SwitchKey>-<EventName>"
+    first, then "<SwitchKey>". If omitted, the script prompts (defaulting to
+    the selected folder name when one was chosen).
+
+.PARAMETER Folder
+    Optional. vSphere folder / network used to scope VM lookup
+    (e.g. "CL1", "CL5", "IRDev"). If omitted, the script lists folders and prompts.
 
 .PARAMETER YamlDir
     Optional. Directory containing the cloud-init YAML files. Defaults to the
@@ -73,8 +78,12 @@
     Optional. Path to export results as CSV.
 
 .EXAMPLE
+    .\Invoke-VyOSCloudInitPush.ps1 -DryRun
+    Connect, pick a network / folder, event name, and switches, then preview the push.
+
+.EXAMPLE
     .\Invoke-VyOSCloudInitPush.ps1 -YamlDir "H:\IQT\New Classes\CCH\Caster\CCH\02_routers" -DryRun
-    Preview what would be set on all five VyOS switches.
+    Preview the push after prompting for folder, event name, and switches.
 
 .EXAMPLE
     .\Invoke-VyOSCloudInitPush.ps1 -YamlDir "H:\IQT\New Classes\CCH\Caster\CCH\02_routers" -RebootAfterPush
@@ -119,10 +128,13 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string[]]$Switches = @('VYOS-SW1','VYOS-SW2','VYOS-SW3','VYOS-SW4','VYOS-SW5'),
+    [string[]]$Switches,
 
     [Parameter(Mandatory=$false)]
-    [string]$EventName = 'CCH',
+    [string]$EventName,
+
+    [Parameter(Mandatory=$false)]
+    [string]$Folder,
 
     [Parameter(Mandatory=$false)]
     [string]$VMName,
@@ -177,11 +189,140 @@ $yamlMap = [ordered]@{
     'VYOS-SW5' = 'vyos-sw5-cleared-defense-contractor.yml'
 }
 
+function Select-VyosSwitches {
+    param([string[]]$Keys)
+
+    Write-Host ""
+    Write-Host "Available switches:" -ForegroundColor Yellow
+    for ($i = 0; $i -lt $Keys.Count; $i++) {
+        Write-Host ("  [{0,2}] {1}" -f ($i + 1), $Keys[$i]) -ForegroundColor White
+    }
+    Write-Host ("  [{0,2}] All" -f ($Keys.Count + 1)) -ForegroundColor White
+    Write-Host ""
+
+    $raw = Read-Host "Select switches (number, comma-separated, names, or All)"
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "No switches selected."
+    }
+
+    $raw = $raw.Trim()
+    if ($raw -eq 'All' -or $raw -eq [string]($Keys.Count + 1)) {
+        return @($Keys)
+    }
+
+    $picked = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in @($raw -split '[,;\s]+' | Where-Object { $_ })) {
+        $num = 0
+        if ([int]::TryParse($part, [ref]$num)) {
+            if ($num -ge 1 -and $num -le $Keys.Count) {
+                $picked.Add($Keys[$num - 1])
+            }
+            elseif ($num -eq ($Keys.Count + 1)) {
+                return @($Keys)
+            }
+            else {
+                throw "Invalid switch number '$part'."
+            }
+        }
+        elseif ($Keys -contains $part) {
+            $picked.Add($part)
+        }
+        else {
+            throw "Unknown switch '$part'. Valid values: $($Keys -join ', ')"
+        }
+    }
+
+    return @($picked | Select-Object -Unique)
+}
+
+function Resolve-YamlPath {
+    param([string]$File)
+    if ([System.IO.Path]::IsPathRooted($File)) { return $File }
+    return (Join-Path $YamlDir $File)
+}
+
+# Guest credential prompt (only needed for -TriggerCloudInit)
+if ($TriggerCloudInit -and -not $DryRun -and -not $GuestCredential) {
+    Write-Host "Enter VyOS guest credentials (vyos user):" -ForegroundColor Yellow
+    $GuestCredential = Get-Credential -Message "VyOS guest OS credentials"
+}
+
+# Connect whenever we will actually change VMs, or when folder / event / target
+# still need to be chosen from inventory.
+$needsInventoryPrompt = (-not $Folder) -or
+    (-not $EventName -and -not $VMName) -or
+    (-not $PSBoundParameters.ContainsKey('Switches') -and -not $VMName)
+$shouldConnect = (-not $DryRun) -or $needsInventoryPrompt
+
+# vCenter credential prompt
+if ($shouldConnect -and -not $VCenterCredential) {
+    Write-Host "Enter vCenter credentials:" -ForegroundColor Yellow
+    $VCenterCredential = Get-Credential -Message "vCenter credentials for $vCenter"
+}
+
+# --- Connection ---
+$vi = $null
+if ($shouldConnect) {
+    try {
+        Write-Host "Connecting to vCenter: $vCenter ..." -ForegroundColor Cyan
+        $vi = Connect-VIServer -Server $vCenter -Credential $VCenterCredential -ErrorAction Stop
+        Write-Host "Connected." -ForegroundColor Green
+    }
+    catch {
+        Write-Error "Failed to connect to vCenter: $_"
+        exit 1
+    }
+}
+
+$scopeHelper = Join-Path $PSScriptRoot '..\Common\Resolve-InventoryScope.ps1'
+if (-not (Test-Path -LiteralPath $scopeHelper)) {
+    Write-Error "Required helper not found: $scopeHelper"
+    exit 1
+}
+. $scopeHelper
+
+$targetFolder = $null
+if ($shouldConnect) {
+    try {
+        $folderScope = Resolve-VIFolderScope -FolderName $Folder -AllowAll
+    }
+    catch {
+        Write-Error $_
+        exit 1
+    }
+    if ($folderScope.All) {
+        $Folder = $null
+    }
+    else {
+        $Folder = $folderScope.Name
+        $targetFolder = $folderScope.Folder
+    }
+}
+
 # Custom single-VM mode: -VMName/-YamlFile override the built-in map.
-# If neither is supplied (and -Switches wasn't explicitly given), prompt for them.
+# If neither is supplied (and -Switches wasn't explicitly given), ask which mode.
 if (-not $VMName -and -not $YamlFile -and -not $PSBoundParameters.ContainsKey('Switches')) {
-    $VMName = Read-Host "VyOS VM name (press Enter to use the built-in switch map)"
-    if ($VMName) {
+    Write-Host ""
+    Write-Host "Target mode:" -ForegroundColor Yellow
+    Write-Host "  [ 1] Built-in switch map (VYOS-SW1 .. VYOS-SW5)" -ForegroundColor White
+    Write-Host "  [ 2] Single custom VM + YAML file" -ForegroundColor White
+    $modeChoice = Read-Host "Select a target mode (1 or 2)"
+    if ($modeChoice -eq '2') {
+        if ($targetFolder) {
+            $vyosVms = @(Get-VM -Location $targetFolder -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '(?i)vyos' } | Sort-Object Name)
+            if ($vyosVms.Count -gt 0) {
+                Write-Host ""
+                Write-Host "VyOS VMs in '$Folder':" -ForegroundColor Yellow
+                $pickedVm = Select-VIListItem -Items $vyosVms -Prompt "Select a VM (number or name)" -Label {
+                    param($vm) "$($vm.Name)  [$($vm.PowerState)]"
+                }
+                if ($pickedVm) { $VMName = $pickedVm.Name }
+            }
+        }
+        if (-not $VMName) {
+            $VMName = Read-Host "VyOS VM name"
+        }
         while (-not $YamlFile) {
             $YamlFile = Read-Host "Cloud-init YAML file (full path, or filename relative to $YamlDir)"
         }
@@ -200,13 +341,40 @@ if ($VMName -or $YamlFile) {
     $customMode = $false
 }
 
-function Resolve-YamlPath {
-    param([string]$File)
-    if ([System.IO.Path]::IsPathRooted($File)) { return $File }
-    return (Join-Path $YamlDir $File)
+if (-not $customMode) {
+    if (-not $EventName) {
+        $defaultEvent = if ($Folder) { $Folder } else { '' }
+        $prompt = if ($defaultEvent) {
+            "Event name [default: $defaultEvent]"
+        }
+        else {
+            "Event name (e.g. CCH, CL1, IRDev)"
+        }
+        $typedEvent = Read-Host $prompt
+        if ([string]::IsNullOrWhiteSpace($typedEvent)) {
+            if (-not $defaultEvent) {
+                Write-Error "EventName is required."
+                exit 1
+            }
+            $EventName = $defaultEvent
+        }
+        else {
+            $EventName = $typedEvent.Trim()
+        }
+    }
+
+    if (-not $PSBoundParameters.ContainsKey('Switches') -or -not $Switches -or $Switches.Count -eq 0) {
+        try {
+            $Switches = @(Select-VyosSwitches -Keys @($yamlMap.Keys))
+        }
+        catch {
+            Write-Error $_
+            exit 1
+        }
+    }
 }
 
-# Validate -Switches values
+# Validate targets after any interactive selection.
 foreach ($sw in $Switches) {
     if (-not $yamlMap.Contains($sw)) {
         Write-Error "Unknown switch key '$sw'. Valid values: $($yamlMap.Keys -join ', ')"
@@ -214,7 +382,6 @@ foreach ($sw in $Switches) {
     }
 }
 
-# Validate YAML files exist (skip in DryRun)
 if (-not $DryRun) {
     foreach ($sw in $Switches) {
         $yamlPath = Resolve-YamlPath $yamlMap[$sw]
@@ -222,32 +389,6 @@ if (-not $DryRun) {
             Write-Error "YAML file not found: $yamlPath"
             exit 1
         }
-    }
-}
-
-# Guest credential prompt (only needed for -TriggerCloudInit)
-if ($TriggerCloudInit -and -not $DryRun -and -not $GuestCredential) {
-    Write-Host "Enter VyOS guest credentials (vyos user):" -ForegroundColor Yellow
-    $GuestCredential = Get-Credential -Message "VyOS guest OS credentials"
-}
-
-# vCenter credential prompt
-if (-not $VCenterCredential) {
-    Write-Host "Enter vCenter credentials:" -ForegroundColor Yellow
-    $VCenterCredential = Get-Credential -Message "vCenter credentials for $vCenter"
-}
-
-# --- Connection ---
-$vi = $null
-if (-not $DryRun) {
-    try {
-        Write-Host "Connecting to vCenter: $vCenter ..." -ForegroundColor Cyan
-        $vi = Connect-VIServer -Server $vCenter -Credential $VCenterCredential -ErrorAction Stop
-        Write-Host "Connected." -ForegroundColor Green
-    }
-    catch {
-        Write-Error "Failed to connect to vCenter: $_"
-        exit 1
     }
 }
 
@@ -297,7 +438,8 @@ function Wait-VimTask {
 }
 
 Write-Host "`n=== VyOS Cloud-Init GuestInfo Push ===" -ForegroundColor Cyan
-Write-Host "  Event          : $EventName" -ForegroundColor White
+Write-Host "  Folder         : $(if ($Folder) { $Folder } else { '(any)' })" -ForegroundColor White
+Write-Host "  Event          : $(if ($EventName) { $EventName } else { '(custom VM)' })" -ForegroundColor White
 Write-Host "  Yaml Dir       : $YamlDir" -ForegroundColor White
 Write-Host "  Switches       : $($Switches -join ', ')" -ForegroundColor White
 Write-Host "  Reboot         : $RebootAfterPush" -ForegroundColor White
@@ -320,17 +462,19 @@ try {
         }
 
         # Locate VM: custom mode uses the exact name; otherwise try "<key>-<event>" then bare key
+        $lookup = @{ ErrorAction = 'SilentlyContinue' }
+        if ($targetFolder) { $lookup.Location = $targetFolder }
+
         if ($customMode) {
-            $vm = Get-VM -Name $switchKey -ErrorAction SilentlyContinue | Select-Object -First 1
-            $notFoundDetail = "VM not found as '$switchKey'"
+            $vm = Get-VM -Name $switchKey @lookup | Select-Object -First 1
+            $notFoundDetail = "VM not found as '$switchKey'$(if ($Folder) { " in folder '$Folder'" })"
         }
         else {
-            $vm = Get-VM -Name "$switchKey-$EventName" -ErrorAction SilentlyContinue |
-                  Select-Object -First 1
+            $vm = Get-VM -Name "$switchKey-$EventName" @lookup | Select-Object -First 1
             if (-not $vm) {
-                $vm = Get-VM -Name $switchKey -ErrorAction SilentlyContinue | Select-Object -First 1
+                $vm = Get-VM -Name $switchKey @lookup | Select-Object -First 1
             }
-            $notFoundDetail = "VM not found as '$switchKey-$EventName' or '$switchKey'"
+            $notFoundDetail = "VM not found as '$switchKey-$EventName' or '$switchKey'$(if ($Folder) { " in folder '$Folder'" })"
         }
         if (-not $vm) {
             Add-Result -VMName $switchKey -SwitchKey $switchKey -YamlFile $yamlFile `
