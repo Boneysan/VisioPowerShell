@@ -45,12 +45,24 @@
 .EXAMPLE
     .\Set-VDEMcInternalIPs.ps1 -vCenter "c1r1r12-vcsa-01.texnet1.net" -OutputFile "mc-internal-fix.csv"
 
+.OUTPUTS
+    Console status for each VM and an optional CSV of verify/fix results when
+    -OutputFile is specified.
+
 .NOTES
     Requires:
     - VMware PowerCLI module
     - Active vCenter connection OR -vCenter parameter
     - VMware Tools running on target VMs
     - Guest OS credentials with local admin rights
+
+    How to use:
+      Get-Help .\Set-VDEMcInternalIPs.ps1 -Full
+      Get-Help .\Set-VDEMcInternalIPs.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

@@ -33,9 +33,13 @@
     Requires:
     - VMware PowerCLI module with content library support
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-ContentLibraryReport.ps1 -Full
+      Get-Help .\Get-ContentLibraryReport.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

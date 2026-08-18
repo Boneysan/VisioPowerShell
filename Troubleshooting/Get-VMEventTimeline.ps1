@@ -48,9 +48,14 @@
     Uses the vSphere EventManager collector API for efficient, server-side filtering
     rather than transferring the full event log.
     Requires VMware PowerCLI module.
-    Author: GitHub Copilot
+
+    How to use:
+      Get-Help .\Get-VMEventTimeline.ps1 -Full
+      Get-Help .\Get-VMEventTimeline.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

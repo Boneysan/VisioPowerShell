@@ -2,6 +2,7 @@
 <#
 .SYNOPSIS
     Collects vSphere deployment diagnostic logs to investigate failed VM provisioning.
+
 .DESCRIPTION
     Pulls customization events, VMware Tools status, task history, and optionally
     guest-side logs (sysprep / cloud-init / vmware-imc) for one or more VMs.
@@ -10,27 +11,57 @@
       - Sysprep failures
       - Cloud-init failures
       - Cloning errors
+
 .PARAMETER VMName
     One or more VM names to investigate. Accepts wildcards.
+
 .PARAMETER VIServer
     vCenter hostname or IP. If omitted, uses any existing VIServer connection.
+
 .PARAMETER Credential
     Credentials for vCenter. Prompts if not supplied and not already connected.
+
 .PARAMETER GuestCredential
     Credentials for the guest OS (required for pulling in-guest logs).
     If omitted, in-guest log collection is skipped.
+
 .PARAMETER HoursBack
     How far back to search for events and tasks (default: 24 hours).
+
 .PARAMETER OutputPath
     Folder to write the HTML report to. Defaults to the script directory.
+
 .PARAMETER SkipGuestLogs
     Skip attempting to pull logs from inside the guest OS.
+
 .EXAMPLE
     .\Get-DeploymentDiagnostics.ps1 -VMName "OFFICE-WKS1-CLDT"
+    Collects the last 24 hours of deployment events and tasks for one VM.
+
 .EXAMPLE
     .\Get-DeploymentDiagnostics.ps1 -VMName "OFFICE-WKS1-*" -HoursBack 48 -VIServer vcenter.lab.local
+    Connects to a specific vCenter and diagnoses every VM matching the wildcard.
+
 .EXAMPLE
     .\Get-DeploymentDiagnostics.ps1 -VMName "OFFICE-WKS1-CLDT" -GuestCredential (Get-Credential)
+    Also pulls in-guest sysprep / cloud-init / vmware-imc logs.
+
+.OUTPUTS
+    An HTML report written to OutputPath, plus console status while collection runs.
+
+.NOTES
+    Requires:
+    - VMware PowerCLI module
+    - Read access to VM events and tasks
+    - Guest credentials and VMware Tools to collect in-guest logs
+
+    How to use:
+      Get-Help .\Get-DeploymentDiagnostics.ps1 -Full
+      Get-Help .\Get-DeploymentDiagnostics.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 [CmdletBinding()]
 param(

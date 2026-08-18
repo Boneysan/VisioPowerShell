@@ -90,6 +90,14 @@
     - Level 2 (30 minutes): Up to 1 week of data
     - Level 3 (2 hours): Up to 1 month of data
     - Level 4 (1 day): Up to 1 year of data
+
+    How to use:
+      Get-Help .\Get-VMUtilizationByFolder.ps1 -Full
+      Get-Help .\Get-VMUtilizationByFolder.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

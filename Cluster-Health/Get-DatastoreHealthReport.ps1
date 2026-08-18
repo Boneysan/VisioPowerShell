@@ -67,9 +67,13 @@
     - Read access to datastore and storage information in vCenter
     - For path health checks: access to host storage adapter configuration
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-DatastoreHealthReport.ps1 -Full
+      Get-Help .\Get-DatastoreHealthReport.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

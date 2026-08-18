@@ -86,7 +86,7 @@
     Preview which VMs would be cloned to templates without making changes.
 
 .EXAMPLE
-    .\.Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -TargetFolder "Templates\CyberRange" -NamePrefix "base_" -NameSuffix "" -PowerOffBeforeClone -OutputFile "clone-results.csv"
+    .\Copy-VMsToTemplates.ps1 -SourceFolder "CyberRange\Exercise01" -TargetFolder "Templates\CyberRange" -NamePrefix "base_" -NameSuffix "" -PowerOffBeforeClone -OutputFile "clone-results.csv"
     Clone all VMs in Exercise01 with a prefix, powering off running VMs first.
 
 .EXAMPLE
@@ -106,6 +106,13 @@
     - VMware PowerCLI module
     - Permissions to create/manage VMs and templates in vCenter
 
+    How to use:
+      Get-Help .\Copy-VMsToTemplates.ps1 -Full
+      Get-Help .\Copy-VMsToTemplates.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

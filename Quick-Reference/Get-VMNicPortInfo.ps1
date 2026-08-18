@@ -23,6 +23,14 @@
     - VMware PowerCLI module
     - Active vCenter connection
     - Read access to VM configuration
+
+    How to use:
+      Get-Help .\Get-VMNicPortInfo.ps1 -Full
+      Get-Help .\Get-VMNicPortInfo.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

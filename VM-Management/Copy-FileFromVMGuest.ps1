@@ -1,8 +1,39 @@
 <#
 .SYNOPSIS
-  Transfer a file from a guest VM to the local machine via PowerCLI.
+    Copy a file from a guest VM to the local machine using PowerCLI guest operations.
+
 .DESCRIPTION
-  Prompts for connection and guest OS details; validates inside-guest path; transfers file with logging.
+    Interactive helper that copies a file out of a Windows or Linux guest. The script
+    prompts for the guest source path, VM name, local destination path, and vCenter
+    address, then asks for vCenter and guest OS credentials. It validates that VMware
+    Tools is running and that the guest path exists before transferring the file.
+    Progress is written to the console and to vm_guest_copy.log in the current directory.
+
+    This script does not take command-line parameters. Press Enter at each prompt to
+    accept the displayed default.
+
+.EXAMPLE
+    .\Copy-FileFromVMGuest.ps1
+    Follow the prompts to pull a file from the guest to the local machine.
+
+.OUTPUTS
+    Copies the selected guest file to the local destination path.
+    Writes a timestamped log to .\vm_guest_copy.log.
+
+.NOTES
+    Requires:
+    - VMware PowerCLI module
+    - VM powered on with VMware Tools running
+    - Guest credentials with permission to read the source file
+    - vCenter credentials with VirtualMachine.GuestOperations privileges
+
+    How to use:
+      Get-Help .\Copy-FileFromVMGuest.ps1 -Full
+      Get-Help .\Copy-FileFromVMGuest.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 # Global script configuration

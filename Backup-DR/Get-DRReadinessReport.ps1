@@ -40,9 +40,13 @@
     - Read access to cluster and VM configuration
     - SRM PowerCLI module (optional, for SRM checks)
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-DRReadinessReport.ps1 -Full
+      Get-Help .\Get-DRReadinessReport.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

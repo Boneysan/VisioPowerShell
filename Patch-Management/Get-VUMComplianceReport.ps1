@@ -39,9 +39,13 @@
     Requires:
     - VMware PowerCLI module including VMware.VimAutomation.PatchManagement
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-VUMComplianceReport.ps1 -Full
+      Get-Help .\Get-VUMComplianceReport.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

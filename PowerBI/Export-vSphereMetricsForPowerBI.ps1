@@ -27,14 +27,30 @@
 
 .EXAMPLE
     .\Export-vSphereMetricsForPowerBI.ps1 -vCenterServer "vcenter.domain.local"
+    Exports the default 7-day metric set to C:\Data\vSphereMetrics.
 
 .EXAMPLE
     .\Export-vSphereMetricsForPowerBI.ps1 -vCenterServer "vcenter1","vcenter2" -OutputPath "D:\PowerBI\Data" -DaysOfStats 14
+    Collects 14 days of stats from two vCenters into a custom folder.
+
+.OUTPUTS
+    CSV files in OutputPath, including VM_RightSizing.csv, Zombie_VMs.csv,
+    Snapshots.csv, Datastore_Capacity.csv, Cluster_Performance.csv,
+    Datastore_Latency.csv, Infrastructure_Hygiene.csv, VM_Changes.csv,
+    DRS_Effectiveness.csv, Cluster_Capacity.csv, Host_Inventory.csv,
+    and Export_Summary.csv.
 
 .NOTES
-    Author: vSphere PowerBI Integration
     Requires: VMware PowerCLI module
     Schedule: Recommended to run daily via Windows Task Scheduler
+
+    How to use:
+      Get-Help .\Export-vSphereMetricsForPowerBI.ps1 -Full
+      Get-Help .\Export-vSphereMetricsForPowerBI.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 [CmdletBinding()]

@@ -96,6 +96,14 @@
     - Memory %: Percentage of configured memory actively used
     - Disk KBps: Kilobytes per second read/write
     - Network KBps: Kilobytes per second received/transmitted
+
+    How to use:
+      Get-Help .\Get-VMUtilization.ps1 -Full
+      Get-Help .\Get-VMUtilization.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

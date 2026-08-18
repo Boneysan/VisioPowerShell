@@ -58,6 +58,14 @@
 
 .NOTES
     Requires VMware PowerCLI and snapshot permissions.
+
+    How to use:
+      Get-Help .\New-PatternSnapshot.ps1 -Full
+      Get-Help .\New-PatternSnapshot.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

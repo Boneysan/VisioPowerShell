@@ -41,14 +41,27 @@
 
 .EXAMPLE
     .\Export-vSphereOperationsDashboard.ps1 -vCenterServer "vcenter.domain.local"
+    Exports operations dashboard tiles for one vCenter to C:\Data\vSphereOperations.
 
 .EXAMPLE
     .\Export-vSphereOperationsDashboard.ps1 -vCenterServer "vcenter.domain.local" -NSXManager "nsx.domain.local" -IncludeCloudMetrics
+    Includes NSX health tiles and hybrid on-prem vs cloud cost comparison.
+
+.OUTPUTS
+    CSV files in OutputPath for each dashboard tile (cluster health, capacity
+    headroom, cost/efficiency, SLA/performance, NSX health, hybrid footprint).
 
 .NOTES
-    Author: vSphere Operations Dashboard
     Requires: VMware PowerCLI module, NSX PowerCLI (for NSX metrics)
     Schedule: Recommended to run every 4-6 hours via Windows Task Scheduler
+
+    How to use:
+      Get-Help .\Export-vSphereOperationsDashboard.ps1 -Full
+      Get-Help .\Export-vSphereOperationsDashboard.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 [CmdletBinding()]

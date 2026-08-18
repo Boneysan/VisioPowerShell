@@ -70,9 +70,13 @@
     - NOTE: Expanding the virtual disk only grows the VMDK. The guest OS partition/filesystem
       must be extended separately (using disk management / growpart / resize2fs inside the VM).
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Expand-VMDiskSpace.ps1 -Full
+      Get-Help .\Expand-VMDiskSpace.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

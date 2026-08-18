@@ -68,6 +68,14 @@
     Output Location:
     - The script displays the full absolute path where the CSV is saved
     - Default is current directory where script is executed
+
+    How to use:
+      Get-Help .\Export-NetworkIPAddresses.ps1 -Full
+      Get-Help .\Export-NetworkIPAddresses.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

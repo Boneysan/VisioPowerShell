@@ -34,9 +34,13 @@
     - VMware PowerCLI module
     - Read access to datastore cluster configuration
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-DatastoreClusterConfig.ps1 -Full
+      Get-Help .\Get-DatastoreClusterConfig.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

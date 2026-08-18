@@ -58,9 +58,13 @@
     - VMware PowerCLI module
     - Read access to vCenter cluster, host, VM, and event data
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-ClusterHealthBundle.ps1 -Full
+      Get-Help .\Get-ClusterHealthBundle.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

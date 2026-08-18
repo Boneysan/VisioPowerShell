@@ -84,10 +84,14 @@
     - Compliance and audit reporting
     - Decommissioning candidates (powered off, old, unused)
     - Migration planning and host balancing
-    
-    Author: GitHub Copilot
+
+    How to use:
+      Get-Help .\Get-VMLifecycle.ps1 -Full
+      Get-Help .\Get-VMLifecycle.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: December 11, 2025
+    Date:    December 11, 2025
 #>
 
 param(

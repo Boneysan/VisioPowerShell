@@ -71,8 +71,21 @@
     .\Get-FirewallNicPorts.ps1 -PassThru | Where-Object { $_.Network -eq 'MISSING' }
     Firewalls with a NIC whose port group could not be resolved.
 
+.OUTPUTS
+    CSV (default firewall-nic-order.csv) and optional pipeline objects with:
+    VM, NicIndex, NIC, ControllerKey, UnitNumber, PortKey, Network, VlanId,
+    MAC, Connected, PowerState.
+
 .NOTES
     Read-only. Requires read access to VM configuration.
+
+    How to use:
+      Get-Help .\Get-FirewallNicPorts.ps1 -Full
+      Get-Help .\Get-FirewallNicPorts.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 [CmdletBinding(DefaultParameterSetName = 'Pattern')]
 param(

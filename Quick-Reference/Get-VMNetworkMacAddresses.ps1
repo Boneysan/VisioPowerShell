@@ -36,6 +36,14 @@
     Requires:
     - VMware PowerCLI module
     - Active vCenter connection, or use -VIServer
+
+    How to use:
+      Get-Help .\Get-VMNetworkMacAddresses.ps1 -Full
+      Get-Help .\Get-VMNetworkMacAddresses.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

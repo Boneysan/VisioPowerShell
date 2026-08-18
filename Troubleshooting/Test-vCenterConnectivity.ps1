@@ -41,9 +41,13 @@
     - PowerShell 5.1 or later (uses System.Net.Http.HttpClient)
     - For -Credential checks: valid vCenter SSO credentials
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Test-vCenterConnectivity.ps1 -Full
+      Get-Help .\Test-vCenterConnectivity.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

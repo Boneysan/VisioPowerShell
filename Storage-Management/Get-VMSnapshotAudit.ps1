@@ -40,9 +40,14 @@
     Pre-screens VMs using ExtensionData.Snapshot to skip VMs without snapshots
     quickly, avoiding a slow Get-Snapshot call on the entire inventory.
     Requires VMware PowerCLI module.
-    Author: GitHub Copilot
+
+    How to use:
+      Get-Help .\Get-VMSnapshotAudit.ps1 -Full
+      Get-Help .\Get-VMSnapshotAudit.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

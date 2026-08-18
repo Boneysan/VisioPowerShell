@@ -45,9 +45,13 @@
     - Read access to ESXi host configurations
     - Host credentials required for some ESXCLI-level checks
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Test-ESXiSecurityBaseline.ps1 -Full
+      Get-Help .\Test-ESXiSecurityBaseline.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

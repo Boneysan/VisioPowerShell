@@ -39,9 +39,13 @@
     - VMware PowerCLI module
     - Network access to ESXi hosts on port 443
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-CertificateStatus.ps1 -Full
+      Get-Help .\Get-CertificateStatus.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

@@ -108,9 +108,13 @@
       VYOS-SW4  vyos-sw4-dungeonnet-operations.yml
       VYOS-SW5  vyos-sw5-cleared-defense-contractor.yml
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Invoke-VyOSCloudInitPush.ps1 -Full
+      Get-Help .\Invoke-VyOSCloudInitPush.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: June 27, 2026
+    Date:    June 27, 2026
 #>
 
 param(

@@ -41,9 +41,13 @@
     - NSX Manager API credentials (read-only auditor role is sufficient)
     - PowerShell 5.1 or later
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-NSXSegmentAudit.ps1 -Full
+      Get-Help .\Get-NSXSegmentAudit.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

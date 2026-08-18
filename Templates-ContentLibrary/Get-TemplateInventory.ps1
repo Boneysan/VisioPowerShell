@@ -37,9 +37,13 @@
     - VMware PowerCLI module
     - Content Library cmdlets (for -IncludeContentLibrary)
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-TemplateInventory.ps1 -Full
+      Get-Help .\Get-TemplateInventory.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: March 5, 2026
+    Date:    March 5, 2026
 #>
 
 param(

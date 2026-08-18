@@ -25,6 +25,38 @@
 
 .PARAMETER IdentifyGateways
     Switch to attempt to identify network gateways based on common patterns.
+
+.EXAMPLE
+    .\vDiagram-NetworkTopology.ps1 -vCenter "vcenter.company.com" -GroupBy VLAN
+    Builds a VLAN-grouped draw.io diagram of the connected vCenter inventory.
+
+.EXAMPLE
+    .\vDiagram-NetworkTopology.ps1 -vCenter "vcenter.company.com" -GroupBy SecurityZone -IncludeSwimLanes -IdentifyGateways
+    Groups networks by security zone, draws swim lanes, and highlights multi-homed gateway VMs.
+
+.EXAMPLE
+    .\vDiagram-NetworkTopology.ps1 -GroupBy Subnet -ShowIsolatedNetworks -OutputFile "C:\Diagrams\network-topology.drawio"
+    Uses an existing vCenter session, includes isolated networks, and writes to a custom path.
+
+.OUTPUTS
+    A .drawio XML file. Default: network-topology.drawio in the current directory.
+    Open the file at https://app.diagrams.net or in the Draw.io desktop app.
+
+.NOTES
+    Requires:
+    - VMware PowerCLI module
+    - Read access to vCenter inventory, networks, and VM guest information
+    - VMware Tools on VMs for IP address and OS details
+
+    See vDiagram-NetworkTopology-README.md in this folder for grouping modes and layout details.
+
+    How to use:
+      Get-Help .\vDiagram-NetworkTopology.ps1 -Full
+      Get-Help .\vDiagram-NetworkTopology.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 param(
     [Parameter(Mandatory=$false)]

@@ -65,9 +65,13 @@
     Balloon/swap values of 0 are normal; any value above the 100 MB threshold
     flagged here indicates active memory pressure on that VM.
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-ResourcePressureReport.ps1 -Full
+      Get-Help .\Get-ResourcePressureReport.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

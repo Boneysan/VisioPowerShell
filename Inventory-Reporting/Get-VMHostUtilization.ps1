@@ -72,10 +72,14 @@
     - Identifying migration candidates for maintenance
     - DRS effectiveness analysis
     - Pre-maintenance host evacuation planning
-    
-    Author: GitHub Copilot
+
+    How to use:
+      Get-Help .\Get-VMHostUtilization.ps1 -Full
+      Get-Help .\Get-VMHostUtilization.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: December 16, 2025
+    Date:    December 16, 2025
 #>
 
 param(

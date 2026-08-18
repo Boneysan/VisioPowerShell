@@ -49,6 +49,14 @@
     Requires:
     - VMware PowerCLI module
     - Read access to vCenter
+
+    How to use:
+      Get-Help .\Get-VMNamesByFolder.ps1 -Full
+      Get-Help .\Get-VMNamesByFolder.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 param(

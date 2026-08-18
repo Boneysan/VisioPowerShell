@@ -65,9 +65,13 @@
     - SSH access to each pfSense router management IP
     - terraform in PATH if using -GeneratePlan
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Invoke-PfSenseConfigPush.ps1 -Full
+      Get-Help .\Invoke-PfSenseConfigPush.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: June 25, 2026
+    Date:    June 25, 2026
 #>
 
 param(

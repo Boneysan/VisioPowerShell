@@ -77,9 +77,13 @@
     - vCenter permissions: VM guest operations (file copy, script execution)
     - VMware Tools running inside the pfSense VM
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Invoke-PfSenseConfigPushPowerCLI.ps1 -Full
+      Get-Help .\Invoke-PfSenseConfigPushPowerCLI.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 2.0
-    Date: June 25, 2026
+    Date:    June 25, 2026
 #>
 
 param(

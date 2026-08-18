@@ -179,6 +179,44 @@ Set-PowerCLIConfiguration -ParticipateInCEIP $false -Confirm:$false
 
 ---
 
+## Using the scripts
+
+Every script uses the same comment-based help layout. From the script's folder:
+
+```powershell
+# What the script does, parameters, examples, and requirements
+Get-Help .\Get-LicenseAudit.ps1 -Full
+
+# Runnable examples only
+Get-Help .\Get-LicenseAudit.ps1 -Examples
+```
+
+Typical run pattern:
+
+```powershell
+# Use an existing session
+Connect-VIServer -Server "vcenter.company.com"
+.\Inventory-Reporting\Get-VMLifecycle.ps1 -OutputFile "lifecycle.csv"
+
+# Or pass the vCenter/VIServer parameter and let the script connect
+.\Inventory-Reporting\Get-VMLifecycle.ps1 -vCenter "vcenter.company.com" -OutputFile "lifecycle.csv"
+```
+
+Header standard on every `.ps1`:
+
+| Section | Purpose |
+|---------|---------|
+| `.SYNOPSIS` | One-line description |
+| `.DESCRIPTION` | What the script does and when to use it |
+| `.PARAMETER` | Each parameter, including defaults |
+| `.EXAMPLE` | Copy-pasteable commands with a short explanation |
+| `.OUTPUTS` | CSV, HTML, diagram, or object shape |
+| `.NOTES` | Requirements, `Get-Help` usage, author, version, date |
+
+Author on all scripts: **Mike Zomer**.
+
+---
+
 ## Scripts by Domain
 
 ---
@@ -596,6 +634,8 @@ Copy `Diagramming/Assets/My-VI-Shapes.vss` to `%USERPROFILE%\Documents\My Shapes
 ---
 
 ## Credits
+
+Author: Mike Zomer
 
 Original Visio diagramming script by Alan Renouf ([@alanrenouf](https://github.com/alanrenouf))
 

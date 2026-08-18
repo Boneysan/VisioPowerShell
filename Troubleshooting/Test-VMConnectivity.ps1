@@ -47,9 +47,13 @@
     - VMware Tools running in guest VMs (for IP address resolution)
     - Network connectivity from the machine running this script to the VMs
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Test-VMConnectivity.ps1 -Full
+      Get-Help .\Test-VMConnectivity.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

@@ -21,6 +21,9 @@
     .\vDiagram.ps1 -VIServer "vcenter.example.com" -Cluster "Production"
     Creates a Visio diagram of only the Production cluster.
 
+.OUTPUTS
+    Microsoft Visio document: My_vDrawing.vsd in the user's Documents folder.
+
 .NOTES
     Requires:
     - Microsoft Visio installed on the local machine
@@ -28,6 +31,14 @@
     - My-VI-Shapes.vss stencil file in the same directory
     
     Output: My_vDrawing.vsd in user's Documents folder
+
+    How to use:
+      Get-Help .\vDiagram.ps1 -Full
+      Get-Help .\vDiagram.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 Param ([string]$VIServer, [string]$Cluster)

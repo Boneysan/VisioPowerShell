@@ -98,9 +98,13 @@
     - VMware Tools installed in guest VMs for -Quiesce
     - VMware Tools recommended for graceful shutdown when -PowerOffBeforeSnapshot is used
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\New-RangeSnapshot.ps1 -Full
+      Get-Help .\New-RangeSnapshot.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.0
-    Date: April 4, 2026
+    Date:    April 4, 2026
 #>
 
 param(

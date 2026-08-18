@@ -31,6 +31,9 @@
     Connect-VIServer -Server vcenter.example.com
     .\vDiagram-DrawIO.ps1
 
+.OUTPUTS
+    Draw.io XML file: My_vDrawing.drawio in the user's Documents folder.
+
 .NOTES
     Requires:
     - VMware PowerCLI module
@@ -41,6 +44,14 @@
     - Draw.io web application (https://app.diagrams.net)
     - Draw.io desktop application
     - Visual Studio Code with Draw.io extension
+
+    How to use:
+      Get-Help .\vDiagram-DrawIO.ps1 -Full
+      Get-Help .\vDiagram-DrawIO.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 Param ([string]$VIServer, [string]$Cluster)

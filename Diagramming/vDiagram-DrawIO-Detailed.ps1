@@ -33,6 +33,9 @@
     Connect-VIServer -Server vcenter.example.com
     .\vDiagram-DrawIO-Detailed.ps1
 
+.OUTPUTS
+    Draw.io XML file: My_vDrawing_Detailed.drawio in the user's Documents folder.
+
 .NOTES
     Requires:
     - VMware PowerCLI module
@@ -57,6 +60,14 @@
     
     Performance: For large environments (100+ VMs), this script may take several minutes to complete
     as it collects detailed network adapter information for each VM.
+
+    How to use:
+      Get-Help .\vDiagram-DrawIO-Detailed.ps1 -Full
+      Get-Help .\vDiagram-DrawIO-Detailed.ps1 -Examples
+
+    Author:  Mike Zomer
+    Version: 1.0
+    Date:    August 18, 2026
 #>
 
 Param ([string]$VIServer, [string]$Cluster)

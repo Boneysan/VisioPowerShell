@@ -119,9 +119,13 @@
     - VMware PowerCLI module
     - Read access to vCenter inventory
 
-    Author: GitHub Copilot
+    How to use:
+      Get-Help .\Get-TemplateFolderUsage.ps1 -Full
+      Get-Help .\Get-TemplateFolderUsage.ps1 -Examples
+
+    Author:  Mike Zomer
     Version: 1.1
-    Date: August 7, 2026
+    Date:    August 7, 2026
 #>
 
 param(
